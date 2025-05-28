@@ -368,6 +368,82 @@ query {
 }
 ```
 
+### Get Inventory Predictions
+```graphql
+query {
+  getInventoryPredictions {
+    predictions {
+      componentId
+      componentName
+      currentStock
+      averageDailyConsumption
+      daysUntilLowStock
+      recommendedOrderQuantity
+      urgencyLevel
+      confidenceScore
+    }
+    highUrgencyCount
+    mediumUrgencyCount
+    lowUrgencyCount
+  }
+}
+```
+
+### Get Price Predictions
+```graphql
+query {
+  getPricePredictions {
+    predictions {
+      componentId
+      componentName
+      currentPrice
+      predictedPrice
+      priceTrend
+      priceVolatility
+      confidenceScore
+      recommendation
+    }
+    increasingPriceCount
+    decreasingPriceCount
+    stablePriceCount
+  }
+}
+```
+
+### Get Inventory Recommendations
+```graphql
+query {
+  getInventoryRecommendations {
+    recommendations {
+      componentId
+      componentName
+      priority
+      action
+      reasoning
+      stockPrediction {
+        currentStock
+        averageDailyConsumption
+        daysUntilLowStock
+        recommendedOrderQuantity
+        urgencyLevel
+        confidenceScore
+      }
+      pricePrediction {
+        currentPrice
+        predictedPrice
+        priceTrend
+        priceVolatility
+        confidenceScore
+        recommendation
+      }
+    }
+    highPriorityCount
+    mediumPriorityCount
+    lowPriorityCount
+  }
+}
+```
+
 ## Features
 
 ### Queries

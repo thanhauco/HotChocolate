@@ -853,6 +853,376 @@ namespace ElectronicsComponents.GraphQL
 
             return Math.Max(0, healthScore);
         }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<InventoryPredictions> GetInventoryPredictions(
+            [Service] ApplicationDbContext context,
+            CancellationToken cancellationToken)
+        {
+            var components = await context.Components
+                .Include(c => c.StockHistory)
+                .ToListAsync(cancellationToken);
+
+            var predictions = new List<StockPrediction>();
+            foreach (var component in components)
+            {
+                var stockHistory = component.StockHistory
+                    .OrderByDescending(s => s.ChangedAt)
+                    .Take(10)
+                    .ToList();
+
+                if (stockHistory.Count >= 3)
+                {
+                    var averageConsumption = CalculateAverageConsumption(stockHistory);
+                    var daysUntilLowStock = CalculateDaysUntilLowStock(component, averageConsumption);
+                    var recommendedOrderQuantity = CalculateRecommendedOrderQuantity(component, averageConsumption);
+
+                    predictions.Add(new StockPrediction
+                    {
+                        ComponentId = component.Id,
+                        ComponentName = component.Name,
+                        CurrentStock = component.StockQuantity,
+                        AverageDailyConsumption = averageConsumption,
+                        DaysUntilLowStock = daysUntilLowStock,
+                        RecommendedOrderQuantity = recommendedOrderQuantity,
+                        UrgencyLevel = CalculateUrgencyLevel(daysUntilLowStock),
+                        ConfidenceScore = CalculateConfidenceScore(stockHistory.Count)
+                    });
+                }
+            }
+
+            return new InventoryPredictions
+            {
+                Predictions = predictions.OrderBy(p => p.DaysUntilLowStock).ToList(),
+                HighUrgencyCount = predictions.Count(p => p.UrgencyLevel == UrgencyLevel.High),
+                MediumUrgencyCount = predictions.Count(p => p.UrgencyLevel == UrgencyLevel.Medium),
+                LowUrgencyCount = predictions.Count(p => p.UrgencyLevel == UrgencyLevel.Low)
+            };
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<PricePredictions> GetPricePredictions(
+            [Service] ApplicationDbContext context,
+            CancellationToken cancellationToken)
+        {
+            var components = await context.Components
+                .Include(c => c.PriceHistory)
+                .ToListAsync(cancellationToken);
+
+            var predictions = new List<PricePrediction>();
+            foreach (var component in components)
+            {
+                var priceHistory = component.PriceHistory
+                    .OrderByDescending(p => p.ChangedAt)
+                    .Take(10)
+                    .ToList();
+
+                if (priceHistory.Count >= 3)
+                {
+                    var priceTrend = AnalyzePriceTrend(priceHistory);
+                    var predictedPrice = PredictNextPrice(component.Price, priceTrend);
+                    var priceVolatility = CalculatePriceVolatility(priceHistory);
+
+                    predictions.Add(new PricePrediction
+                    {
+                        ComponentId = component.Id,
+                        ComponentName = component.Name,
+                        CurrentPrice = component.Price,
+                        PredictedPrice = predictedPrice,
+                        PriceTrend = priceTrend,
+                        PriceVolatility = priceVolatility,
+                        ConfidenceScore = CalculatePriceConfidenceScore(priceHistory.Count, priceVolatility),
+                        Recommendation = GeneratePriceRecommendation(priceTrend, priceVolatility)
+                    });
+                }
+            }
+
+            return new PricePredictions
+            {
+                Predictions = predictions.OrderByDescending(p => p.PriceVolatility).ToList(),
+                IncreasingPriceCount = predictions.Count(p => p.PriceTrend == PriceTrend.Increasing),
+                DecreasingPriceCount = predictions.Count(p => p.PriceTrend == PriceTrend.Decreasing),
+                StablePriceCount = predictions.Count(p => p.PriceTrend == PriceTrend.Stable)
+            };
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<InventoryRecommendations> GetInventoryRecommendations(
+            [Service] ApplicationDbContext context,
+            CancellationToken cancellationToken)
+        {
+            var components = await context.Components
+                .Include(c => c.StockHistory)
+                .Include(c => c.PriceHistory)
+                .ToListAsync(cancellationToken);
+
+            var recommendations = new List<InventoryRecommendation>();
+            foreach (var component in components)
+            {
+                var stockHistory = component.StockHistory
+                    .OrderByDescending(s => s.ChangedAt)
+                    .Take(10)
+                    .ToList();
+
+                var priceHistory = component.PriceHistory
+                    .OrderByDescending(p => p.ChangedAt)
+                    .Take(10)
+                    .ToList();
+
+                if (stockHistory.Count >= 3 && priceHistory.Count >= 3)
+                {
+                    var stockPrediction = GenerateStockPrediction(component, stockHistory);
+                    var pricePrediction = GeneratePricePrediction(component, priceHistory);
+                    var recommendation = GenerateInventoryRecommendation(
+                        component,
+                        stockPrediction,
+                        pricePrediction
+                    );
+
+                    recommendations.Add(recommendation);
+                }
+            }
+
+            return new InventoryRecommendations
+            {
+                Recommendations = recommendations.OrderByDescending(r => r.Priority).ToList(),
+                HighPriorityCount = recommendations.Count(r => r.Priority == Priority.High),
+                MediumPriorityCount = recommendations.Count(r => r.Priority == Priority.Medium),
+                LowPriorityCount = recommendations.Count(r => r.Priority == Priority.Low)
+            };
+        }
+
+        private double CalculateAverageConsumption(List<StockHistory> history)
+        {
+            var totalConsumption = 0;
+            var days = 0;
+
+            for (int i = 0; i < history.Count - 1; i++)
+            {
+                var current = history[i];
+                var next = history[i + 1];
+                var timeSpan = (current.ChangedAt - next.ChangedAt).TotalDays;
+                
+                if (timeSpan > 0)
+                {
+                    totalConsumption += Math.Abs(current.NewQuantity - next.NewQuantity);
+                    days += (int)timeSpan;
+                }
+            }
+
+            return days > 0 ? (double)totalConsumption / days : 0;
+        }
+
+        private int CalculateDaysUntilLowStock(Component component, double averageConsumption)
+        {
+            if (averageConsumption <= 0) return int.MaxValue;
+            return (int)((component.StockQuantity - component.MinimumStockLevel) / averageConsumption);
+        }
+
+        private int CalculateRecommendedOrderQuantity(Component component, double averageConsumption)
+        {
+            var safetyStock = component.MinimumStockLevel;
+            var leadTime = 7; // Assuming 7 days lead time
+            var recommendedQuantity = (int)(averageConsumption * leadTime + safetyStock - component.StockQuantity);
+            return Math.Max(0, recommendedQuantity);
+        }
+
+        private UrgencyLevel CalculateUrgencyLevel(int daysUntilLowStock)
+        {
+            return daysUntilLowStock switch
+            {
+                <= 7 => UrgencyLevel.High,
+                <= 14 => UrgencyLevel.Medium,
+                _ => UrgencyLevel.Low
+            };
+        }
+
+        private double CalculateConfidenceScore(int dataPoints)
+        {
+            return Math.Min(1.0, dataPoints / 10.0);
+        }
+
+        private PriceTrend AnalyzePriceTrend(List<PriceHistory> history)
+        {
+            var priceChanges = new List<decimal>();
+            for (int i = 0; i < history.Count - 1; i++)
+            {
+                priceChanges.Add(history[i].NewPrice - history[i + 1].NewPrice);
+            }
+
+            var averageChange = priceChanges.Average();
+            var threshold = 0.05m; // 5% threshold
+
+            return averageChange switch
+            {
+                > threshold => PriceTrend.Increasing,
+                < -threshold => PriceTrend.Decreasing,
+                _ => PriceTrend.Stable
+            };
+        }
+
+        private decimal PredictNextPrice(decimal currentPrice, PriceTrend trend)
+        {
+            return trend switch
+            {
+                PriceTrend.Increasing => currentPrice * 1.05m,
+                PriceTrend.Decreasing => currentPrice * 0.95m,
+                _ => currentPrice
+            };
+        }
+
+        private double CalculatePriceVolatility(List<PriceHistory> history)
+        {
+            var priceChanges = history
+                .Select(p => (double)p.NewPrice)
+                .ToList();
+
+            if (priceChanges.Count < 2) return 0;
+
+            var mean = priceChanges.Average();
+            var variance = priceChanges.Sum(p => Math.Pow(p - mean, 2)) / (priceChanges.Count - 1);
+            return Math.Sqrt(variance);
+        }
+
+        private double CalculatePriceConfidenceScore(int dataPoints, double volatility)
+        {
+            var baseScore = Math.Min(1.0, dataPoints / 10.0);
+            var volatilityFactor = Math.Max(0, 1 - volatility / 100);
+            return baseScore * volatilityFactor;
+        }
+
+        private string GeneratePriceRecommendation(PriceTrend trend, double volatility)
+        {
+            return trend switch
+            {
+                PriceTrend.Increasing => volatility > 10 
+                    ? "Consider increasing prices gradually" 
+                    : "Consider immediate price increase",
+                PriceTrend.Decreasing => volatility > 10 
+                    ? "Consider reducing prices gradually" 
+                    : "Consider immediate price reduction",
+                _ => "Maintain current pricing"
+            };
+        }
+
+        private StockPrediction GenerateStockPrediction(Component component, List<StockHistory> history)
+        {
+            var averageConsumption = CalculateAverageConsumption(history);
+            var daysUntilLowStock = CalculateDaysUntilLowStock(component, averageConsumption);
+            var recommendedOrderQuantity = CalculateRecommendedOrderQuantity(component, averageConsumption);
+
+            return new StockPrediction
+            {
+                ComponentId = component.Id,
+                ComponentName = component.Name,
+                CurrentStock = component.StockQuantity,
+                AverageDailyConsumption = averageConsumption,
+                DaysUntilLowStock = daysUntilLowStock,
+                RecommendedOrderQuantity = recommendedOrderQuantity,
+                UrgencyLevel = CalculateUrgencyLevel(daysUntilLowStock),
+                ConfidenceScore = CalculateConfidenceScore(history.Count)
+            };
+        }
+
+        private PricePrediction GeneratePricePrediction(Component component, List<PriceHistory> history)
+        {
+            var priceTrend = AnalyzePriceTrend(history);
+            var predictedPrice = PredictNextPrice(component.Price, priceTrend);
+            var priceVolatility = CalculatePriceVolatility(history);
+
+            return new PricePrediction
+            {
+                ComponentId = component.Id,
+                ComponentName = component.Name,
+                CurrentPrice = component.Price,
+                PredictedPrice = predictedPrice,
+                PriceTrend = priceTrend,
+                PriceVolatility = priceVolatility,
+                ConfidenceScore = CalculatePriceConfidenceScore(history.Count, priceVolatility),
+                Recommendation = GeneratePriceRecommendation(priceTrend, priceVolatility)
+            };
+        }
+
+        private InventoryRecommendation GenerateInventoryRecommendation(
+            Component component,
+            StockPrediction stockPrediction,
+            PricePrediction pricePrediction)
+        {
+            var priority = CalculateRecommendationPriority(stockPrediction, pricePrediction);
+            var action = GenerateRecommendationAction(stockPrediction, pricePrediction);
+            var reasoning = GenerateRecommendationReasoning(stockPrediction, pricePrediction);
+
+            return new InventoryRecommendation
+            {
+                ComponentId = component.Id,
+                ComponentName = component.Name,
+                Priority = priority,
+                Action = action,
+                Reasoning = reasoning,
+                StockPrediction = stockPrediction,
+                PricePrediction = pricePrediction
+            };
+        }
+
+        private Priority CalculateRecommendationPriority(
+            StockPrediction stockPrediction,
+            PricePrediction pricePrediction)
+        {
+            var stockUrgency = stockPrediction.UrgencyLevel switch
+            {
+                UrgencyLevel.High => 3,
+                UrgencyLevel.Medium => 2,
+                _ => 1
+            };
+
+            var priceUrgency = pricePrediction.PriceTrend switch
+            {
+                PriceTrend.Increasing => 2,
+                PriceTrend.Decreasing => 1,
+                _ => 0
+            };
+
+            var totalScore = stockUrgency + priceUrgency;
+            return totalScore switch
+            {
+                >= 4 => Priority.High,
+                >= 2 => Priority.Medium,
+                _ => Priority.Low
+            };
+        }
+
+        private string GenerateRecommendationAction(
+            StockPrediction stockPrediction,
+            PricePrediction pricePrediction)
+        {
+            var actions = new List<string>();
+
+            if (stockPrediction.UrgencyLevel == UrgencyLevel.High)
+                actions.Add($"Order {stockPrediction.RecommendedOrderQuantity} units");
+
+            if (pricePrediction.PriceTrend == PriceTrend.Increasing)
+                actions.Add("Consider price increase");
+
+            if (pricePrediction.PriceTrend == PriceTrend.Decreasing)
+                actions.Add("Consider price reduction");
+
+            return string.Join(" and ", actions);
+        }
+
+        private string GenerateRecommendationReasoning(
+            StockPrediction stockPrediction,
+            PricePrediction pricePrediction)
+        {
+            var reasons = new List<string>();
+
+            if (stockPrediction.DaysUntilLowStock <= 7)
+                reasons.Add($"Stock will be low in {stockPrediction.DaysUntilLowStock} days");
+
+            if (pricePrediction.PriceTrend != PriceTrend.Stable)
+                reasons.Add($"Price is {pricePrediction.PriceTrend.ToString().ToLower()}");
+
+            return string.Join("; ", reasons);
+        }
     }
 
     public record AdvancedSearchInput(
@@ -1007,4 +1377,72 @@ namespace ElectronicsComponents.GraphQL
         int OutOfStock,
         int LowStock,
         int Overstocked);
+
+    public record InventoryPredictions(
+        List<StockPrediction> Predictions,
+        int HighUrgencyCount,
+        int MediumUrgencyCount,
+        int LowUrgencyCount);
+
+    public record StockPrediction(
+        int ComponentId,
+        string ComponentName,
+        int CurrentStock,
+        double AverageDailyConsumption,
+        int DaysUntilLowStock,
+        int RecommendedOrderQuantity,
+        UrgencyLevel UrgencyLevel,
+        double ConfidenceScore);
+
+    public record PricePredictions(
+        List<PricePrediction> Predictions,
+        int IncreasingPriceCount,
+        int DecreasingPriceCount,
+        int StablePriceCount);
+
+    public record PricePrediction(
+        int ComponentId,
+        string ComponentName,
+        decimal CurrentPrice,
+        decimal PredictedPrice,
+        PriceTrend PriceTrend,
+        double PriceVolatility,
+        double ConfidenceScore,
+        string Recommendation);
+
+    public record InventoryRecommendations(
+        List<InventoryRecommendation> Recommendations,
+        int HighPriorityCount,
+        int MediumPriorityCount,
+        int LowPriorityCount);
+
+    public record InventoryRecommendation(
+        int ComponentId,
+        string ComponentName,
+        Priority Priority,
+        string Action,
+        string Reasoning,
+        StockPrediction StockPrediction,
+        PricePrediction PricePrediction);
+
+    public enum UrgencyLevel
+    {
+        Low,
+        Medium,
+        High
+    }
+
+    public enum PriceTrend
+    {
+        Increasing,
+        Decreasing,
+        Stable
+    }
+
+    public enum Priority
+    {
+        Low,
+        Medium,
+        High
+    }
 } 
