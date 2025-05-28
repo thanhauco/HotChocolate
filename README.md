@@ -444,6 +444,111 @@ query {
 }
 ```
 
+### Get ML Predictions
+```graphql
+query {
+  getMLPredictions {
+    predictions {
+      componentId
+      componentName
+      seasonalPattern {
+        dailyPattern
+      }
+      demandForecast {
+        averageDailyDemand
+        dailyForecasts
+        weeklyForecast
+        monthlyForecast
+      }
+      priceForecast {
+        currentPrice
+        predictedChange
+        predictedVolatility
+        confidenceInterval {
+          lowerBound
+          upperBound
+        }
+      }
+      optimalPrice
+      optimalStock
+      confidenceScore
+      recommendations
+    }
+    highConfidenceCount
+    mediumConfidenceCount
+    lowConfidenceCount
+  }
+}
+```
+
+### Get Optimization Results
+```graphql
+query {
+  getOptimizationResults {
+    results {
+      componentId
+      componentName
+      currentValue
+      optimizedValue
+      potentialSavings
+      impactLevel
+      recommendations
+    }
+    totalPotentialSavings
+    highImpactCount
+    mediumImpactCount
+    lowImpactCount
+  }
+}
+```
+
+### Get Real-Time Monitoring
+```graphql
+query {
+  getRealTimeMonitoring {
+    components {
+      componentId
+      componentName
+      currentStock
+      currentPrice
+      stockVelocity
+      priceVelocity
+      stockTrend
+      priceTrend
+      alerts {
+        type
+        message
+        severity
+        timestamp
+      }
+      lastUpdated
+    }
+    criticalAlerts
+    warningAlerts
+    infoAlerts
+  }
+}
+```
+
+### Get Automated Alerts
+```graphql
+query {
+  getAutomatedAlerts {
+    alerts {
+      componentId
+      componentName
+      type
+      message
+      severity
+      timestamp
+    }
+    criticalCount
+    warningCount
+    infoCount
+  }
+}
+```
+
 ## Features
 
 ### Queries
@@ -501,3 +606,57 @@ docker run -p 5000:5000 electronics-components
 
 ## License
 MIT License 
+
+## Advanced Features
+
+### Machine Learning & Predictive Analytics
+- Seasonal pattern detection for demand forecasting
+- Price trend analysis and volatility prediction
+- Optimal price calculation based on demand elasticity
+- Optimal stock level recommendations
+- Confidence scoring for predictions
+- Automated recommendations for price and stock adjustments
+
+### Inventory Optimization
+- Component-level optimization analysis
+- Potential savings calculation
+- Impact assessment for optimization recommendations
+- Automated stock level optimization
+- Price optimization based on demand patterns
+- Seasonal demand forecasting
+- Lead time consideration in stock calculations
+
+### Advanced Analytics
+- Price elasticity analysis
+- Demand forecasting with seasonal patterns
+- Confidence intervals for predictions
+- Impact level assessment
+- Automated recommendation generation
+- Historical pattern analysis
+- Volatility monitoring 
+
+### Real-Time Monitoring
+- Live stock level monitoring
+- Price change velocity tracking
+- Stock movement velocity tracking
+- Trend analysis for stock and prices
+- Real-time alert generation
+- Component status tracking
+- Last update timestamps
+
+### Automated Alerts
+- Critical stock level alerts
+- Price volatility alerts
+- Trend-based alerts
+- Multi-factor alert generation
+- Severity-based alert categorization
+- Timestamp tracking
+- Alert history
+
+### Alert Types
+- Stock alerts (low stock, rapid decrease)
+- Price alerts (volatility, trends)
+- Trend alerts (combined stock and price analysis)
+- Severity levels (Info, Warning, Critical)
+- Real-time notifications
+- Historical alert tracking 

@@ -1223,6 +1223,702 @@ namespace ElectronicsComponents.GraphQL
 
             return string.Join("; ", reasons);
         }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<MLPredictions> GetMLPredictions(
+            [Service] ApplicationDbContext context,
+            CancellationToken cancellationToken)
+        {
+            var components = await context.Components
+                .Include(c => c.StockHistory)
+                .Include(c => c.PriceHistory)
+                .ToListAsync(cancellationToken);
+
+            var predictions = new List<MLPrediction>();
+            foreach (var component in components)
+            {
+                var stockHistory = component.StockHistory
+                    .OrderByDescending(s => s.ChangedAt)
+                    .Take(30)
+                    .ToList();
+
+                var priceHistory = component.PriceHistory
+                    .OrderByDescending(p => p.ChangedAt)
+                    .Take(30)
+                    .ToList();
+
+                if (stockHistory.Count >= 10 && priceHistory.Count >= 10)
+                {
+                    var seasonalPattern = DetectSeasonalPattern(stockHistory);
+                    var demandForecast = ForecastDemand(stockHistory, seasonalPattern);
+                    var priceForecast = ForecastPrice(priceHistory);
+                    var optimalPrice = CalculateOptimalPrice(component, demandForecast, priceForecast);
+                    var optimalStock = CalculateOptimalStock(component, demandForecast, seasonalPattern);
+
+                    predictions.Add(new MLPrediction
+                    {
+                        ComponentId = component.Id,
+                        ComponentName = component.Name,
+                        SeasonalPattern = seasonalPattern,
+                        DemandForecast = demandForecast,
+                        PriceForecast = priceForecast,
+                        OptimalPrice = optimalPrice,
+                        OptimalStock = optimalStock,
+                        ConfidenceScore = CalculateMLConfidenceScore(stockHistory.Count, priceHistory.Count),
+                        Recommendations = GenerateMLRecommendations(
+                            component,
+                            demandForecast,
+                            priceForecast,
+                            optimalPrice,
+                            optimalStock
+                        )
+                    });
+                }
+            }
+
+            return new MLPredictions
+            {
+                Predictions = predictions.OrderByDescending(p => p.ConfidenceScore).ToList(),
+                HighConfidenceCount = predictions.Count(p => p.ConfidenceScore >= 0.8),
+                MediumConfidenceCount = predictions.Count(p => p.ConfidenceScore >= 0.5 && p.ConfidenceScore < 0.8),
+                LowConfidenceCount = predictions.Count(p => p.ConfidenceScore < 0.5)
+            };
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<OptimizationResults> GetOptimizationResults(
+            [Service] ApplicationDbContext context,
+            CancellationToken cancellationToken)
+        {
+            var components = await context.Components
+                .Include(c => c.StockHistory)
+                .Include(c => c.PriceHistory)
+                .ToListAsync(cancellationToken);
+
+            var results = new List<OptimizationResult>();
+            foreach (var component in components)
+            {
+                var stockHistory = component.StockHistory
+                    .OrderByDescending(s => s.ChangedAt)
+                    .Take(30)
+                    .ToList();
+
+                var priceHistory = component.PriceHistory
+                    .OrderByDescending(p => p.ChangedAt)
+                    .Take(30)
+                    .ToList();
+
+                if (stockHistory.Count >= 10 && priceHistory.Count >= 10)
+                {
+                    var optimization = OptimizeComponent(component, stockHistory, priceHistory);
+                    results.Add(optimization);
+                }
+            }
+
+            return new OptimizationResults
+            {
+                Results = results.OrderByDescending(r => r.PotentialSavings).ToList(),
+                TotalPotentialSavings = results.Sum(r => r.PotentialSavings),
+                HighImpactCount = results.Count(r => r.ImpactLevel == ImpactLevel.High),
+                MediumImpactCount = results.Count(r => r.ImpactLevel == ImpactLevel.Medium),
+                LowImpactCount = results.Count(r => r.ImpactLevel == ImpactLevel.Low)
+            };
+        }
+
+        private SeasonalPattern DetectSeasonalPattern(List<StockHistory> history)
+        {
+            var dailyConsumption = new Dictionary<DayOfWeek, List<int>>();
+            foreach (var record in history)
+            {
+                var dayOfWeek = record.ChangedAt.DayOfWeek;
+                if (!dailyConsumption.ContainsKey(dayOfWeek))
+                    dailyConsumption[dayOfWeek] = new List<int>();
+
+                dailyConsumption[dayOfWeek].Add(Math.Abs(record.NewQuantity - record.OldQuantity));
+            }
+
+            var pattern = new SeasonalPattern();
+            foreach (var day in dailyConsumption)
+            {
+                pattern.DailyPattern[day.Key] = day.Value.Average();
+            }
+
+            return pattern;
+        }
+
+        private DemandForecast ForecastDemand(List<StockHistory> history, SeasonalPattern pattern)
+        {
+            var averageConsumption = CalculateAverageConsumption(history);
+            var dailyForecasts = new Dictionary<DayOfWeek, double>();
+
+            foreach (var day in pattern.DailyPattern)
+            {
+                dailyForecasts[day.Key] = averageConsumption * day.Value;
+            }
+
+            return new DemandForecast
+            {
+                AverageDailyDemand = averageConsumption,
+                DailyForecasts = dailyForecasts,
+                WeeklyForecast = dailyForecasts.Values.Sum(),
+                MonthlyForecast = dailyForecasts.Values.Sum() * 30
+            };
+        }
+
+        private PriceForecast ForecastPrice(List<PriceHistory> history)
+        {
+            var priceChanges = new List<decimal>();
+            for (int i = 0; i < history.Count - 1; i++)
+            {
+                priceChanges.Add(history[i].NewPrice - history[i + 1].NewPrice);
+            }
+
+            var averageChange = priceChanges.Average();
+            var volatility = CalculatePriceVolatility(history);
+
+            return new PriceForecast
+            {
+                CurrentPrice = history.First().NewPrice,
+                PredictedChange = averageChange,
+                PredictedVolatility = volatility,
+                ConfidenceInterval = new ConfidenceInterval
+                {
+                    LowerBound = history.First().NewPrice * (1 - volatility),
+                    UpperBound = history.First().NewPrice * (1 + volatility)
+                }
+            };
+        }
+
+        private decimal CalculateOptimalPrice(
+            Component component,
+            DemandForecast demandForecast,
+            PriceForecast priceForecast)
+        {
+            var elasticity = CalculatePriceElasticity(component, demandForecast);
+            var currentPrice = component.Price;
+            var optimalPrice = currentPrice;
+
+            if (elasticity < -1) // Elastic demand
+            {
+                optimalPrice = currentPrice * 0.95m; // Slight price decrease
+            }
+            else if (elasticity > -1) // Inelastic demand
+            {
+                optimalPrice = currentPrice * 1.05m; // Slight price increase
+            }
+
+            return Math.Max(optimalPrice, component.Price * 0.5m); // Ensure minimum 50% of current price
+        }
+
+        private int CalculateOptimalStock(
+            Component component,
+            DemandForecast demandForecast,
+            SeasonalPattern pattern)
+        {
+            var safetyStock = component.MinimumStockLevel;
+            var leadTime = 7; // Assuming 7 days lead time
+            var maxDailyDemand = pattern.DailyPattern.Values.Max();
+            
+            return (int)(maxDailyDemand * leadTime + safetyStock);
+        }
+
+        private double CalculatePriceElasticity(
+            Component component,
+            DemandForecast demandForecast)
+        {
+            // Simplified elasticity calculation
+            // In a real system, this would use more sophisticated methods
+            return -1.5; // Assuming slightly elastic demand
+        }
+
+        private double CalculateMLConfidenceScore(int stockDataPoints, int priceDataPoints)
+        {
+            var stockScore = Math.Min(1.0, stockDataPoints / 30.0);
+            var priceScore = Math.Min(1.0, priceDataPoints / 30.0);
+            return (stockScore + priceScore) / 2;
+        }
+
+        private List<string> GenerateMLRecommendations(
+            Component component,
+            DemandForecast demandForecast,
+            PriceForecast priceForecast,
+            decimal optimalPrice,
+            int optimalStock)
+        {
+            var recommendations = new List<string>();
+
+            if (Math.Abs(component.Price - optimalPrice) / component.Price > 0.1m)
+            {
+                recommendations.Add($"Consider adjusting price to {optimalPrice:C}");
+            }
+
+            if (Math.Abs(component.StockQuantity - optimalStock) > component.MinimumStockLevel)
+            {
+                recommendations.Add($"Adjust stock level to {optimalStock} units");
+            }
+
+            if (demandForecast.WeeklyForecast > component.StockQuantity)
+            {
+                recommendations.Add("Increase stock levels to meet forecasted demand");
+            }
+
+            if (priceForecast.PredictedVolatility > 0.1)
+            {
+                recommendations.Add("Monitor price volatility closely");
+            }
+
+            return recommendations;
+        }
+
+        private OptimizationResult OptimizeComponent(
+            Component component,
+            List<StockHistory> stockHistory,
+            List<PriceHistory> priceHistory)
+        {
+            var currentValue = component.Price * component.StockQuantity;
+            var optimalPrice = CalculateOptimalPrice(
+                component,
+                ForecastDemand(stockHistory, DetectSeasonalPattern(stockHistory)),
+                ForecastPrice(priceHistory)
+            );
+            var optimalStock = CalculateOptimalStock(
+                component,
+                ForecastDemand(stockHistory, DetectSeasonalPattern(stockHistory)),
+                DetectSeasonalPattern(stockHistory)
+            );
+            var optimizedValue = optimalPrice * optimalStock;
+            var potentialSavings = currentValue - optimizedValue;
+
+            return new OptimizationResult
+            {
+                ComponentId = component.Id,
+                ComponentName = component.Name,
+                CurrentValue = currentValue,
+                OptimizedValue = optimizedValue,
+                PotentialSavings = potentialSavings,
+                ImpactLevel = CalculateImpactLevel(potentialSavings, currentValue),
+                Recommendations = GenerateOptimizationRecommendations(
+                    component,
+                    optimalPrice,
+                    optimalStock,
+                    potentialSavings
+                )
+            };
+        }
+
+        private ImpactLevel CalculateImpactLevel(decimal potentialSavings, decimal currentValue)
+        {
+            var savingsPercentage = potentialSavings / currentValue;
+            return savingsPercentage switch
+            {
+                >= 0.2m => ImpactLevel.High,
+                >= 0.1m => ImpactLevel.Medium,
+                _ => ImpactLevel.Low
+            };
+        }
+
+        private List<string> GenerateOptimizationRecommendations(
+            Component component,
+            decimal optimalPrice,
+            int optimalStock,
+            decimal potentialSavings)
+        {
+            var recommendations = new List<string>();
+
+            if (Math.Abs(component.Price - optimalPrice) / component.Price > 0.1m)
+            {
+                recommendations.Add($"Adjust price from {component.Price:C} to {optimalPrice:C}");
+            }
+
+            if (Math.Abs(component.StockQuantity - optimalStock) > component.MinimumStockLevel)
+            {
+                recommendations.Add($"Adjust stock from {component.StockQuantity} to {optimalStock} units");
+            }
+
+            if (potentialSavings > 0)
+            {
+                recommendations.Add($"Potential savings: {potentialSavings:C}");
+            }
+
+            return recommendations;
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<RealTimeMonitoring> GetRealTimeMonitoring(
+            [Service] ApplicationDbContext context,
+            CancellationToken cancellationToken)
+        {
+            var components = await context.Components
+                .Include(c => c.StockHistory)
+                .Include(c => c.PriceHistory)
+                .ToListAsync(cancellationToken);
+
+            var monitoringData = new List<ComponentMonitoring>();
+            foreach (var component in components)
+            {
+                var stockHistory = component.StockHistory
+                    .OrderByDescending(s => s.ChangedAt)
+                    .Take(10)
+                    .ToList();
+
+                var priceHistory = component.PriceHistory
+                    .OrderByDescending(p => p.ChangedAt)
+                    .Take(10)
+                    .ToList();
+
+                var stockVelocity = CalculateStockVelocity(stockHistory);
+                var priceVelocity = CalculatePriceVelocity(priceHistory);
+                var alerts = GenerateAlerts(component, stockVelocity, priceVelocity);
+
+                monitoringData.Add(new ComponentMonitoring
+                {
+                    ComponentId = component.Id,
+                    ComponentName = component.Name,
+                    CurrentStock = component.StockQuantity,
+                    CurrentPrice = component.Price,
+                    StockVelocity = stockVelocity,
+                    PriceVelocity = priceVelocity,
+                    StockTrend = AnalyzeStockTrend(stockHistory),
+                    PriceTrend = AnalyzePriceTrend(priceHistory),
+                    Alerts = alerts,
+                    LastUpdated = DateTime.UtcNow
+                });
+            }
+
+            return new RealTimeMonitoring
+            {
+                Components = monitoringData,
+                CriticalAlerts = monitoringData.Count(c => c.Alerts.Any(a => a.Severity == AlertSeverity.Critical)),
+                WarningAlerts = monitoringData.Count(c => c.Alerts.Any(a => a.Severity == AlertSeverity.Warning)),
+                InfoAlerts = monitoringData.Count(c => c.Alerts.Any(a => a.Severity == AlertSeverity.Info))
+            };
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<AutomatedAlerts> GetAutomatedAlerts(
+            [Service] ApplicationDbContext context,
+            CancellationToken cancellationToken)
+        {
+            var components = await context.Components
+                .Include(c => c.StockHistory)
+                .Include(c => c.PriceHistory)
+                .ToListAsync(cancellationToken);
+
+            var alerts = new List<Alert>();
+            foreach (var component in components)
+            {
+                var stockHistory = component.StockHistory
+                    .OrderByDescending(s => s.ChangedAt)
+                    .Take(10)
+                    .ToList();
+
+                var priceHistory = component.PriceHistory
+                    .OrderByDescending(p => p.ChangedAt)
+                    .Take(10)
+                    .ToList();
+
+                var stockAlerts = GenerateStockAlerts(component, stockHistory);
+                var priceAlerts = GeneratePriceAlerts(component, priceHistory);
+                var trendAlerts = GenerateTrendAlerts(component, stockHistory, priceHistory);
+
+                alerts.AddRange(stockAlerts);
+                alerts.AddRange(priceAlerts);
+                alerts.AddRange(trendAlerts);
+            }
+
+            return new AutomatedAlerts
+            {
+                Alerts = alerts.OrderByDescending(a => a.Severity).ToList(),
+                CriticalCount = alerts.Count(a => a.Severity == AlertSeverity.Critical),
+                WarningCount = alerts.Count(a => a.Severity == AlertSeverity.Warning),
+                InfoCount = alerts.Count(a => a.Severity == AlertSeverity.Info)
+            };
+        }
+
+        private double CalculateStockVelocity(List<StockHistory> history)
+        {
+            if (history.Count < 2) return 0;
+
+            var changes = new List<double>();
+            for (int i = 0; i < history.Count - 1; i++)
+            {
+                var timeSpan = (history[i].ChangedAt - history[i + 1].ChangedAt).TotalHours;
+                if (timeSpan > 0)
+                {
+                    var change = (double)(history[i].NewQuantity - history[i + 1].NewQuantity) / timeSpan;
+                    changes.Add(change);
+                }
+            }
+
+            return changes.Any() ? changes.Average() : 0;
+        }
+
+        private decimal CalculatePriceVelocity(List<PriceHistory> history)
+        {
+            if (history.Count < 2) return 0;
+
+            var changes = new List<decimal>();
+            for (int i = 0; i < history.Count - 1; i++)
+            {
+                var timeSpan = (history[i].ChangedAt - history[i + 1].ChangedAt).TotalHours;
+                if (timeSpan > 0)
+                {
+                    var change = (history[i].NewPrice - history[i + 1].NewPrice) / (decimal)timeSpan;
+                    changes.Add(change);
+                }
+            }
+
+            return changes.Any() ? changes.Average() : 0;
+        }
+
+        private List<Alert> GenerateAlerts(
+            Component component,
+            double stockVelocity,
+            decimal priceVelocity)
+        {
+            var alerts = new List<Alert>();
+
+            // Stock alerts
+            if (component.StockQuantity <= component.MinimumStockLevel)
+            {
+                alerts.Add(new Alert
+                {
+                    ComponentId = component.Id,
+                    ComponentName = component.Name,
+                    Type = AlertType.Stock,
+                    Message = $"Critical stock level reached: {component.StockQuantity} units",
+                    Severity = AlertSeverity.Critical,
+                    Timestamp = DateTime.UtcNow
+                });
+            }
+            else if (stockVelocity < -5) // Rapid stock decrease
+            {
+                alerts.Add(new Alert
+                {
+                    ComponentId = component.Id,
+                    ComponentName = component.Name,
+                    Type = AlertType.Stock,
+                    Message = $"Rapid stock decrease detected: {stockVelocity:F2} units/hour",
+                    Severity = AlertSeverity.Warning,
+                    Timestamp = DateTime.UtcNow
+                });
+            }
+
+            // Price alerts
+            if (priceVelocity > 0.1m) // Rapid price increase
+            {
+                alerts.Add(new Alert
+                {
+                    ComponentId = component.Id,
+                    ComponentName = component.Name,
+                    Type = AlertType.Price,
+                    Message = $"Rapid price increase detected: {priceVelocity:C}/hour",
+                    Severity = AlertSeverity.Warning,
+                    Timestamp = DateTime.UtcNow
+                });
+            }
+            else if (priceVelocity < -0.1m) // Rapid price decrease
+            {
+                alerts.Add(new Alert
+                {
+                    ComponentId = component.Id,
+                    ComponentName = component.Name,
+                    Type = AlertType.Price,
+                    Message = $"Rapid price decrease detected: {priceVelocity:C}/hour",
+                    Severity = AlertSeverity.Info,
+                    Timestamp = DateTime.UtcNow
+                });
+            }
+
+            return alerts;
+        }
+
+        private List<Alert> GenerateStockAlerts(Component component, List<StockHistory> history)
+        {
+            var alerts = new List<Alert>();
+
+            if (history.Count >= 3)
+            {
+                var recentStock = history.Take(3).Select(h => h.NewQuantity).ToList();
+                var stockTrend = AnalyzeStockTrend(history);
+
+                if (stockTrend == StockTrend.RapidDecrease && component.StockQuantity <= component.MinimumStockLevel)
+                {
+                    alerts.Add(new Alert
+                    {
+                        ComponentId = component.Id,
+                        ComponentName = component.Name,
+                        Type = AlertType.Stock,
+                        Message = "Critical: Rapid stock decrease with low inventory",
+                        Severity = AlertSeverity.Critical,
+                        Timestamp = DateTime.UtcNow
+                    });
+                }
+                else if (stockTrend == StockTrend.Decrease && component.StockQuantity <= component.MinimumStockLevel * 1.5)
+                {
+                    alerts.Add(new Alert
+                    {
+                        ComponentId = component.Id,
+                        ComponentName = component.Name,
+                        Type = AlertType.Stock,
+                        Message = "Warning: Stock decreasing with moderate inventory",
+                        Severity = AlertSeverity.Warning,
+                        Timestamp = DateTime.UtcNow
+                    });
+                }
+            }
+
+            return alerts;
+        }
+
+        private List<Alert> GeneratePriceAlerts(Component component, List<PriceHistory> history)
+        {
+            var alerts = new List<Alert>();
+
+            if (history.Count >= 3)
+            {
+                var recentPrices = history.Take(3).Select(h => h.NewPrice).ToList();
+                var priceTrend = AnalyzePriceTrend(history);
+                var volatility = CalculatePriceVolatility(history);
+
+                if (priceTrend == PriceTrend.Increasing && volatility > 0.1)
+                {
+                    alerts.Add(new Alert
+                    {
+                        ComponentId = component.Id,
+                        ComponentName = component.Name,
+                        Type = AlertType.Price,
+                        Message = "Warning: High price volatility with increasing trend",
+                        Severity = AlertSeverity.Warning,
+                        Timestamp = DateTime.UtcNow
+                    });
+                }
+                else if (priceTrend == PriceTrend.Decreasing && volatility > 0.1)
+                {
+                    alerts.Add(new Alert
+                    {
+                        ComponentId = component.Id,
+                        ComponentName = component.Name,
+                        Type = AlertType.Price,
+                        Message = "Info: High price volatility with decreasing trend",
+                        Severity = AlertSeverity.Info,
+                        Timestamp = DateTime.UtcNow
+                    });
+                }
+            }
+
+            return alerts;
+        }
+
+        private List<Alert> GenerateTrendAlerts(
+            Component component,
+            List<StockHistory> stockHistory,
+            List<PriceHistory> priceHistory)
+        {
+            var alerts = new List<Alert>();
+
+            if (stockHistory.Count >= 3 && priceHistory.Count >= 3)
+            {
+                var stockTrend = AnalyzeStockTrend(stockHistory);
+                var priceTrend = AnalyzePriceTrend(priceHistory);
+
+                if (stockTrend == StockTrend.RapidDecrease && priceTrend == PriceTrend.Increasing)
+                {
+                    alerts.Add(new Alert
+                    {
+                        ComponentId = component.Id,
+                        ComponentName = component.Name,
+                        Type = AlertType.Trend,
+                        Message = "Critical: Stock rapidly decreasing while prices are increasing",
+                        Severity = AlertSeverity.Critical,
+                        Timestamp = DateTime.UtcNow
+                    });
+                }
+                else if (stockTrend == StockTrend.Increase && priceTrend == PriceTrend.Decreasing)
+                {
+                    alerts.Add(new Alert
+                    {
+                        ComponentId = component.Id,
+                        ComponentName = component.Name,
+                        Type = AlertType.Trend,
+                        Message = "Info: Stock increasing while prices are decreasing",
+                        Severity = AlertSeverity.Info,
+                        Timestamp = DateTime.UtcNow
+                    });
+                }
+            }
+
+            return alerts;
+        }
+
+        private StockTrend AnalyzeStockTrend(List<StockHistory> history)
+        {
+            // Implementation of AnalyzeStockTrend method
+            // This is a placeholder and should be implemented based on your specific requirements
+            return StockTrend.Stable; // Placeholder return, actual implementation needed
+        }
+
+        private PriceTrend AnalyzePriceTrend(List<PriceHistory> history)
+        {
+            // Implementation of AnalyzePriceTrend method
+            // This is a placeholder and should be implemented based on your specific requirements
+            return PriceTrend.Stable; // Placeholder return, actual implementation needed
+        }
+
+        public record RealTimeMonitoring(
+            List<ComponentMonitoring> Components,
+            int CriticalAlerts,
+            int WarningAlerts,
+            int InfoAlerts);
+
+        public record ComponentMonitoring(
+            int ComponentId,
+            string ComponentName,
+            int CurrentStock,
+            decimal CurrentPrice,
+            double StockVelocity,
+            decimal PriceVelocity,
+            StockTrend StockTrend,
+            PriceTrend PriceTrend,
+            List<Alert> Alerts,
+            DateTime LastUpdated);
+
+        public record AutomatedAlerts(
+            List<Alert> Alerts,
+            int CriticalCount,
+            int WarningCount,
+            int InfoCount);
+
+        public record Alert(
+            int ComponentId,
+            string ComponentName,
+            AlertType Type,
+            string Message,
+            AlertSeverity Severity,
+            DateTime Timestamp);
+
+        public enum AlertType
+        {
+            Stock,
+            Price,
+            Trend
+        }
+
+        public enum AlertSeverity
+        {
+            Info,
+            Warning,
+            Critical
+        }
+
+        public enum StockTrend
+        {
+            RapidDecrease,
+            Decrease,
+            Stable,
+            Increase,
+            RapidIncrease
+        }
     }
 
     public record AdvancedSearchInput(
@@ -1440,6 +2136,65 @@ namespace ElectronicsComponents.GraphQL
     }
 
     public enum Priority
+    {
+        Low,
+        Medium,
+        High
+    }
+
+    public record MLPredictions(
+        List<MLPrediction> Predictions,
+        int HighConfidenceCount,
+        int MediumConfidenceCount,
+        int LowConfidenceCount);
+
+    public record MLPrediction(
+        int ComponentId,
+        string ComponentName,
+        SeasonalPattern SeasonalPattern,
+        DemandForecast DemandForecast,
+        PriceForecast PriceForecast,
+        decimal OptimalPrice,
+        int OptimalStock,
+        double ConfidenceScore,
+        List<string> Recommendations);
+
+    public record SeasonalPattern(
+        Dictionary<DayOfWeek, double> DailyPattern = null);
+
+    public record DemandForecast(
+        double AverageDailyDemand,
+        Dictionary<DayOfWeek, double> DailyForecasts,
+        double WeeklyForecast,
+        double MonthlyForecast);
+
+    public record PriceForecast(
+        decimal CurrentPrice,
+        decimal PredictedChange,
+        double PredictedVolatility,
+        ConfidenceInterval ConfidenceInterval);
+
+    public record ConfidenceInterval(
+        decimal LowerBound,
+        decimal UpperBound);
+
+    public record OptimizationResults(
+        List<OptimizationResult> Results,
+        decimal TotalPotentialSavings,
+        int HighImpactCount,
+        int MediumImpactCount,
+        int LowImpactCount);
+
+    public record OptimizationResult(
+        int ComponentId,
+        string ComponentName,
+        decimal CurrentValue,
+        decimal OptimizedValue,
+        decimal PotentialSavings,
+        ImpactLevel ImpactLevel,
+        List<string> Recommendations);
+
+    public enum ImpactLevel
     {
         Low,
         Medium,
