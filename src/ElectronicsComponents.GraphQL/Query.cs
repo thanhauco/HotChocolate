@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using System;
 
 namespace ElectronicsComponents.GraphQL
 {
@@ -457,30 +458,148 @@ namespace ElectronicsComponents.GraphQL
         }
 
         [UseDbContext(typeof(ApplicationDbContext))]
-        public async Task<ComponentAnalytics> GetComponentAnalytics([Service] ApplicationDbContext context)
+        public async Task<ComponentAnalytics> GetComponentAnalytics(
+            [Service] ApplicationDbContext context,
+            CancellationToken cancellationToken)
         {
-            var totalComponents = await context.Components.CountAsync();
-            var totalValue = await context.Components.SumAsync(c => c.Price * c.StockQuantity);
-            var lowStockCount = await context.Components.CountAsync(c => c.StockQuantity < 10);
-            var outOfStockCount = await context.Components.CountAsync(c => c.StockQuantity == 0);
+            var components = await context.Components.ToListAsync(cancellationToken);
             
-            var categoryStats = await context.Components
-                .GroupBy(c => c.Category)
-                .Select(g => new CategoryStats
+            return new ComponentAnalytics
+            {
+                TotalCount = components.Count,
+                TotalValue = components.Sum(c => c.Price * c.StockQuantity),
+                LowStockCount = components.Count(c => c.StockQuantity < c.MinimumStockLevel),
+                OutOfStockCount = components.Count(c => c.StockQuantity == 0),
+                AveragePrice = components.Average(c => c.Price),
+                MostExpensiveComponent = components.OrderByDescending(c => c.Price).FirstOrDefault()?.Name,
+                LeastExpensiveComponent = components.OrderBy(c => c.Price).FirstOrDefault()?.Name,
+                MostStockedComponent = components.OrderByDescending(c => c.StockQuantity).FirstOrDefault()?.Name,
+                LeastStockedComponent = components.OrderBy(c => c.StockQuantity).FirstOrDefault()?.Name
+            };
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<CategoryStatistics> GetCategoryStatistics(
+            [Service] ApplicationDbContext context,
+            CancellationToken cancellationToken)
+        {
+            var components = await context.Components.ToListAsync(cancellationToken);
+            var categories = components.GroupBy(c => c.Category);
+            
+            return new CategoryStatistics
+            {
+                TotalCategories = categories.Count(),
+                CategoryBreakdown = categories.Select(g => new CategoryBreakdown
                 {
                     Category = g.Key,
                     Count = g.Count(),
-                    TotalValue = g.Sum(c => c.Price * c.StockQuantity)
-                })
-                .ToListAsync();
+                    TotalValue = g.Sum(c => c.Price * c.StockQuantity),
+                    AveragePrice = g.Average(c => c.Price),
+                    LowStockCount = g.Count(c => c.StockQuantity < c.MinimumStockLevel),
+                    OutOfStockCount = g.Count(c => c.StockQuantity == 0)
+                }).ToList()
+            };
+        }
 
-            return new ComponentAnalytics
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<PriceStatistics> GetPriceStatistics(
+            [Service] ApplicationDbContext context,
+            CancellationToken cancellationToken)
+        {
+            var components = await context.Components.ToListAsync(cancellationToken);
+            
+            return new PriceStatistics
             {
-                TotalComponents = totalComponents,
-                TotalInventoryValue = totalValue,
-                LowStockCount = lowStockCount,
-                OutOfStockCount = outOfStockCount,
-                CategoryStatistics = categoryStats
+                AveragePrice = components.Average(c => c.Price),
+                MinPrice = components.Min(c => c.Price),
+                MaxPrice = components.Max(c => c.Price),
+                PriceRanges = new List<PriceRange>
+                {
+                    new() { Range = "0-10", Count = components.Count(c => c.Price <= 10) },
+                    new() { Range = "11-50", Count = components.Count(c => c.Price > 10 && c.Price <= 50) },
+                    new() { Range = "51-100", Count = components.Count(c => c.Price > 50 && c.Price <= 100) },
+                    new() { Range = "101+", Count = components.Count(c => c.Price > 100) }
+                }
+            };
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<StockStatistics> GetStockStatistics(
+            [Service] ApplicationDbContext context,
+            CancellationToken cancellationToken)
+        {
+            var components = await context.Components.ToListAsync(cancellationToken);
+            
+            return new StockStatistics
+            {
+                TotalStock = components.Sum(c => c.StockQuantity),
+                AverageStock = components.Average(c => c.StockQuantity),
+                LowStockCount = components.Count(c => c.StockQuantity < c.MinimumStockLevel),
+                OutOfStockCount = components.Count(c => c.StockQuantity == 0),
+                OverstockedCount = components.Count(c => c.StockQuantity > c.MaximumStockLevel),
+                StockRanges = new List<StockRange>
+                {
+                    new() { Range = "0", Count = components.Count(c => c.StockQuantity == 0) },
+                    new() { Range = "1-10", Count = components.Count(c => c.StockQuantity > 0 && c.StockQuantity <= 10) },
+                    new() { Range = "11-50", Count = components.Count(c => c.StockQuantity > 10 && c.StockQuantity <= 50) },
+                    new() { Range = "51+", Count = components.Count(c => c.StockQuantity > 50) }
+                }
+            };
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<ComponentTrends> GetComponentTrends(
+            [Service] ApplicationDbContext context,
+            CancellationToken cancellationToken)
+        {
+            var components = await context.Components.ToListAsync(cancellationToken);
+            var categories = components.GroupBy(c => c.Category);
+            
+            return new ComponentTrends
+            {
+                PriceTrends = categories.Select(g => new PriceTrend
+                {
+                    Category = g.Key,
+                    AveragePrice = g.Average(c => c.Price),
+                    MinPrice = g.Min(c => c.Price),
+                    MaxPrice = g.Max(c => c.Price)
+                }).ToList(),
+                StockTrends = categories.Select(g => new StockTrend
+                {
+                    Category = g.Key,
+                    TotalStock = g.Sum(c => c.StockQuantity),
+                    LowStockCount = g.Count(c => c.StockQuantity < c.MinimumStockLevel),
+                    OutOfStockCount = g.Count(c => c.StockQuantity == 0)
+                }).ToList()
+            };
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<InventoryHealth> GetInventoryHealth(
+            [Service] ApplicationDbContext context,
+            CancellationToken cancellationToken)
+        {
+            var components = await context.Components.ToListAsync(cancellationToken);
+            var totalValue = components.Sum(c => c.Price * c.StockQuantity);
+            var lowStockItems = components.Count(c => c.StockQuantity < c.MinimumStockLevel);
+            var outOfStockItems = components.Count(c => c.StockQuantity == 0);
+            var overstockedItems = components.Count(c => c.StockQuantity > c.MaximumStockLevel);
+            
+            // Calculate health score (0-100)
+            var healthScore = 100;
+            healthScore -= (lowStockItems * 5); // -5 points per low stock item
+            healthScore -= (outOfStockItems * 10); // -10 points per out of stock item
+            healthScore -= (overstockedItems * 3); // -3 points per overstocked item
+            healthScore = Math.Max(0, healthScore); // Ensure score doesn't go below 0
+            
+            return new InventoryHealth
+            {
+                TotalComponents = components.Count,
+                TotalValue = totalValue,
+                LowStockItems = lowStockItems,
+                OutOfStockItems = outOfStockItems,
+                OverstockedItems = overstockedItems,
+                HealthScore = healthScore
             };
         }
 
@@ -613,12 +732,39 @@ namespace ElectronicsComponents.GraphQL
     public record CategoryStockSummary(string Category, int ComponentCount, int TotalStock);
     public record ManufacturerStockSummary(string Manufacturer, int ComponentCount, int TotalStock);
     public record ComponentAnalytics(
-        int TotalComponents,
-        decimal TotalInventoryValue,
+        int TotalCount,
+        decimal TotalValue,
         int LowStockCount,
         int OutOfStockCount,
-        List<CategoryStats> CategoryStatistics);
-    public record CategoryStats(string Category, int Count, decimal TotalValue);
+        double AveragePrice,
+        string? MostExpensiveComponent,
+        string? LeastExpensiveComponent,
+        string? MostStockedComponent,
+        string? LeastStockedComponent);
+    public record CategoryStatistics(
+        int TotalCategories,
+        List<CategoryBreakdown> CategoryBreakdown);
+    public record CategoryBreakdown(
+        string Category,
+        int Count,
+        decimal TotalValue,
+        double AveragePrice,
+        int LowStockCount,
+        int OutOfStockCount);
+    public record PriceStatistics(
+        double AveragePrice,
+        decimal MinPrice,
+        decimal MaxPrice,
+        List<PriceRange> PriceRanges);
+    public record PriceRange(string Range, int Count);
+    public record StockStatistics(
+        int TotalStock,
+        double AverageStock,
+        int LowStockCount,
+        int OutOfStockCount,
+        int OverstockedCount,
+        List<StockRange> StockRanges);
+    public record StockRange(string Range, int Count);
     public record ComponentTrends(
         List<PriceTrend> PriceTrends,
         List<StockTrend> StockTrends);

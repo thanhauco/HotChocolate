@@ -107,14 +107,63 @@ mutation {
 ```graphql
 query {
   getComponentAnalytics {
-    totalComponents
-    totalInventoryValue
+    totalCount
+    totalValue
     lowStockCount
     outOfStockCount
-    categoryStatistics {
+    averagePrice
+    mostExpensiveComponent
+    leastExpensiveComponent
+    mostStockedComponent
+    leastStockedComponent
+  }
+}
+```
+
+### Get Category Statistics
+```graphql
+query {
+  getCategoryStatistics {
+    totalCategories
+    categoryBreakdown {
       category
       count
       totalValue
+      averagePrice
+      lowStockCount
+      outOfStockCount
+    }
+  }
+}
+```
+
+### Get Price Statistics
+```graphql
+query {
+  getPriceStatistics {
+    averagePrice
+    minPrice
+    maxPrice
+    priceRanges {
+      range
+      count
+    }
+  }
+}
+```
+
+### Get Stock Statistics
+```graphql
+query {
+  getStockStatistics {
+    totalStock
+    averageStock
+    lowStockCount
+    outOfStockCount
+    overstockedCount
+    stockRanges {
+      range
+      count
     }
   }
 }
