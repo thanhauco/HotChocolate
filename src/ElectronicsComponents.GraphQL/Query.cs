@@ -2381,6 +2381,286 @@ namespace ElectronicsComponents.GraphQL
             Increase,
             RapidIncrease
         }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<QualityControlReport> GetQualityControlReport(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            var component = await context.Components
+                .Include(c => c.QualityTests)
+                .Include(c => c.TestResults)
+                .FirstOrDefaultAsync(c => c.Id == componentId);
+
+            if (component == null)
+                throw new GraphQLException($"Component with ID {componentId} not found.");
+
+            var testResults = component.TestResults
+                .OrderByDescending(t => t.TestDate)
+                .ToList();
+
+            var qualityMetrics = new QualityMetrics
+            {
+                TotalTests = testResults.Count,
+                PassedTests = testResults.Count(t => t.Status == TestStatus.Passed),
+                FailedTests = testResults.Count(t => t.Status == TestStatus.Failed),
+                AverageScore = testResults.Average(t => t.Score),
+                LastTestDate = testResults.FirstOrDefault()?.TestDate,
+                QualityScore = CalculateQualityScore(testResults)
+            };
+
+            var testHistory = testResults
+                .Select(t => new TestHistoryEntry(
+                    t.TestId,
+                    t.TestName,
+                    t.Status,
+                    t.Score,
+                    t.TestDate,
+                    t.Notes
+                ))
+                .ToList();
+
+            return new QualityControlReport(
+                componentId,
+                component.Name,
+                qualityMetrics,
+                testHistory,
+                GenerateQualityRecommendations(qualityMetrics, testHistory)
+            );
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<TestResults> GetComponentTestResults(
+            int componentId,
+            DateTime startDate,
+            DateTime endDate,
+            [Service] ApplicationDbContext context)
+        {
+            var testResults = await context.TestResults
+                .Where(t => t.ComponentId == componentId &&
+                            t.TestDate >= startDate &&
+                            t.TestDate <= endDate)
+                .OrderByDescending(t => t.TestDate)
+                .ToListAsync();
+
+            var testCategories = testResults
+                .GroupBy(t => t.TestCategory)
+                .Select(g => new TestCategorySummary(
+                    g.Key,
+                    g.Count(),
+                    g.Count(t => t.Status == TestStatus.Passed),
+                    g.Average(t => t.Score)
+                ))
+                .ToList();
+
+            return new TestResults(
+                componentId,
+                testResults.Count,
+                testResults.Count(t => t.Status == TestStatus.Passed),
+                testResults.Count(t => t.Status == TestStatus.Failed),
+                testResults.Average(t => t.Score),
+                testCategories,
+                testResults.Select(t => new TestResultDetail(
+                    t.TestId,
+                    t.TestName,
+                    t.TestCategory,
+                    t.Status,
+                    t.Score,
+                    t.TestDate,
+                    t.Notes
+                )).ToList()
+            );
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<QualityTrends> GetQualityTrends(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            var testResults = await context.TestResults
+                .Where(t => t.ComponentId == componentId)
+                .OrderBy(t => t.TestDate)
+                .ToListAsync();
+
+            var monthlyTrends = testResults
+                .GroupBy(t => new { t.TestDate.Year, t.TestDate.Month })
+                .Select(g => new QualityTrendEntry(
+                    new DateTime(g.Key.Year, g.Key.Month, 1),
+                    g.Count(),
+                    g.Count(t => t.Status == TestStatus.Passed),
+                    g.Average(t => t.Score)
+                ))
+                .OrderBy(t => t.Month)
+                .ToList();
+
+            var categoryTrends = testResults
+                .GroupBy(t => t.TestCategory)
+                .Select(g => new CategoryTrendEntry(
+                    g.Key,
+                    g.Count(),
+                    g.Count(t => t.Status == TestStatus.Passed),
+                    g.Average(t => t.Score)
+                ))
+                .ToList();
+
+            return new QualityTrends(
+                componentId,
+                monthlyTrends,
+                categoryTrends,
+                CalculateQualityImprovement(monthlyTrends)
+            );
+        }
+
+        private double CalculateQualityScore(List<TestResult> testResults)
+        {
+            if (!testResults.Any()) return 0;
+
+            var recentTests = testResults.Take(10).ToList();
+            var passRate = (double)recentTests.Count(t => t.Status == TestStatus.Passed) / recentTests.Count;
+            var averageScore = recentTests.Average(t => t.Score);
+            var consistencyScore = CalculateConsistencyScore(recentTests);
+
+            return (passRate * 0.4 + averageScore * 0.4 + consistencyScore * 0.2) * 100;
+        }
+
+        private double CalculateConsistencyScore(List<TestResult> testResults)
+        {
+            if (testResults.Count < 2) return 1.0;
+
+            var scores = testResults.Select(t => t.Score).ToList();
+            var mean = scores.Average();
+            var variance = scores.Sum(s => Math.Pow(s - mean, 2)) / scores.Count;
+            var standardDeviation = Math.Sqrt(variance);
+
+            return Math.Max(0, 1 - (standardDeviation / mean));
+        }
+
+        private double CalculateQualityImprovement(List<QualityTrendEntry> monthlyTrends)
+        {
+            if (monthlyTrends.Count < 2) return 0;
+
+            var firstMonth = monthlyTrends.First();
+            var lastMonth = monthlyTrends.Last();
+            var firstScore = firstMonth.AverageScore;
+            var lastScore = lastMonth.AverageScore;
+
+            return ((lastScore - firstScore) / firstScore) * 100;
+        }
+
+        private List<string> GenerateQualityRecommendations(
+            QualityMetrics metrics,
+            List<TestHistoryEntry> testHistory)
+        {
+            var recommendations = new List<string>();
+
+            if (metrics.QualityScore < 70)
+            {
+                recommendations.Add("Critical: Immediate quality improvement needed");
+            }
+            else if (metrics.QualityScore < 85)
+            {
+                recommendations.Add("Warning: Quality standards need attention");
+            }
+
+            var recentFailures = testHistory
+                .Where(t => t.Status == TestStatus.Failed)
+                .Take(5)
+                .ToList();
+
+            if (recentFailures.Any())
+            {
+                recommendations.Add($"Recent failures detected in: {string.Join(", ", recentFailures.Select(t => t.TestName))}");
+            }
+
+            if (metrics.AverageScore < 0.8)
+            {
+                recommendations.Add("Consider implementing additional quality control measures");
+            }
+
+            return recommendations;
+        }
+
+        public record QualityControlReport(
+            int ComponentId,
+            string ComponentName,
+            QualityMetrics Metrics,
+            List<TestHistoryEntry> TestHistory,
+            List<string> Recommendations
+        );
+
+        public record QualityMetrics(
+            int TotalTests,
+            int PassedTests,
+            int FailedTests,
+            double AverageScore,
+            DateTime? LastTestDate,
+            double QualityScore
+        );
+
+        public record TestHistoryEntry(
+            int TestId,
+            string TestName,
+            TestStatus Status,
+            double Score,
+            DateTime TestDate,
+            string? Notes
+        );
+
+        public record TestResults(
+            int ComponentId,
+            int TotalTests,
+            int PassedTests,
+            int FailedTests,
+            double AverageScore,
+            List<TestCategorySummary> TestCategories,
+            List<TestResultDetail> TestDetails
+        );
+
+        public record TestCategorySummary(
+            string Category,
+            int TotalTests,
+            int PassedTests,
+            double AverageScore
+        );
+
+        public record TestResultDetail(
+            int TestId,
+            string TestName,
+            string TestCategory,
+            TestStatus Status,
+            double Score,
+            DateTime TestDate,
+            string? Notes
+        );
+
+        public record QualityTrends(
+            int ComponentId,
+            List<QualityTrendEntry> MonthlyTrends,
+            List<CategoryTrendEntry> CategoryTrends,
+            double QualityImprovement
+        );
+
+        public record QualityTrendEntry(
+            DateTime Month,
+            int TotalTests,
+            int PassedTests,
+            double AverageScore
+        );
+
+        public record CategoryTrendEntry(
+            string Category,
+            int TotalTests,
+            int PassedTests,
+            double AverageScore
+        );
+
+        public enum TestStatus
+        {
+            Passed,
+            Failed,
+            InProgress,
+            Cancelled
+        }
     }
 
     public record AdvancedSearchInput(
