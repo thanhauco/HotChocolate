@@ -1865,6 +1865,315 @@ namespace ElectronicsComponents.GraphQL
             return PriceTrend.Stable; // Placeholder return, actual implementation needed
         }
 
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<ComponentDependency>> GetComponentDependencies(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.ComponentDependencies
+                .Include(d => d.DependentComponent)
+                .Where(d => d.ComponentId == componentId)
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<ComponentCompatibility>> GetComponentCompatibilities(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.ComponentCompatibilities
+                .Include(c => c.CompatibleComponent)
+                .Where(c => c.ComponentId == componentId)
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<ComponentSpecification>> GetComponentSpecifications(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.ComponentSpecifications
+                .Where(s => s.ComponentId == componentId)
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<ComponentDocumentation>> GetComponentDocumentation(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.ComponentDocumentation
+                .Where(d => d.ComponentId == componentId)
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<ComponentReview>> GetComponentReviews(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.ComponentReviews
+                .Where(r => r.ComponentId == componentId)
+                .OrderByDescending(r => r.CreatedAt)
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<ComponentRating> GetComponentRating(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.ComponentRatings
+                .FirstOrDefaultAsync(r => r.ComponentId == componentId);
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<ComponentTag>> GetComponentTags(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.ComponentTags
+                .Where(t => t.ComponentId == componentId)
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<ComponentImage>> GetComponentImages(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.ComponentImages
+                .Where(i => i.ComponentId == componentId)
+                .OrderBy(i => i.Type)
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<ComponentVideo>> GetComponentVideos(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.ComponentVideos
+                .Where(v => v.ComponentId == componentId)
+                .OrderByDescending(v => v.CreatedAt)
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<ComponentAttachment>> GetComponentAttachments(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.ComponentAttachments
+                .Where(a => a.ComponentId == componentId)
+                .OrderByDescending(a => a.CreatedAt)
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<ComponentNote>> GetComponentNotes(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.ComponentNotes
+                .Where(n => n.ComponentId == componentId)
+                .OrderByDescending(n => n.CreatedAt)
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<ComponentAlert>> GetComponentAlerts(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.ComponentAlerts
+                .Where(a => a.ComponentId == componentId && a.IsActive)
+                .OrderByDescending(a => a.Severity)
+                .ThenByDescending(a => a.CreatedAt)
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<ComponentEvent>> GetComponentEvents(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.ComponentEvents
+                .Where(e => e.ComponentId == componentId)
+                .OrderByDescending(e => e.CreatedAt)
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<ComponentAudit>> GetComponentAuditTrail(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.ComponentAudits
+                .Where(a => a.ComponentId == componentId)
+                .OrderByDescending(a => a.CreatedAt)
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<Component>> GetComponentsByTag(
+            string tagName,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.Components
+                .Include(c => c.Tags)
+                .Where(c => c.Tags.Any(t => t.Name == tagName))
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<Component>> GetComponentsByRating(
+            double minRating,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.Components
+                .Include(c => c.Rating)
+                .Where(c => c.Rating.AverageRating >= minRating)
+                .OrderByDescending(c => c.Rating.AverageRating)
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<Component>> GetComponentsBySpecification(
+            string specName,
+            string specValue,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.Components
+                .Include(c => c.Specifications)
+                .Where(c => c.Specifications.Any(s => 
+                    s.Name == specName && s.Value == specValue))
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<Component>> GetComponentsByDocumentationType(
+            DocumentationType docType,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.Components
+                .Include(c => c.Documentation)
+                .Where(c => c.Documentation.Any(d => d.Type == docType))
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<Component>> GetComponentsWithActiveAlerts(
+            AlertSeverity severity,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.Components
+                .Include(c => c.Alerts)
+                .Where(c => c.Alerts.Any(a => 
+                    a.IsActive && a.Severity == severity))
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<Component>> GetComponentsByEventType(
+            string eventType,
+            DateTime startDate,
+            DateTime endDate,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.Components
+                .Include(c => c.Events)
+                .Where(c => c.Events.Any(e => 
+                    e.EventType == eventType &&
+                    e.CreatedAt >= startDate &&
+                    e.CreatedAt <= endDate))
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<Component>> GetComponentsByAuditAction(
+            string action,
+            DateTime startDate,
+            DateTime endDate,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.Components
+                .Include(c => c.AuditTrail)
+                .Where(c => c.AuditTrail.Any(a => 
+                    a.Action == action &&
+                    a.CreatedAt >= startDate &&
+                    a.CreatedAt <= endDate))
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<Component>> GetComponentsByImageType(
+            ImageType imageType,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.Components
+                .Include(c => c.Images)
+                .Where(c => c.Images.Any(i => i.Type == imageType))
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<Component>> GetComponentsByVideoType(
+            VideoType videoType,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.Components
+                .Include(c => c.Videos)
+                .Where(c => c.Videos.Any(v => v.Type == videoType))
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<Component>> GetComponentsByAttachmentType(
+            string fileType,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.Components
+                .Include(c => c.Attachments)
+                .Where(c => c.Attachments.Any(a => a.FileType == fileType))
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<Component>> GetComponentsByNoteContent(
+            string searchTerm,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.Components
+                .Include(c => c.Notes)
+                .Where(c => c.Notes.Any(n => 
+                    n.Content.Contains(searchTerm)))
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<Component>> GetComponentsByDependencyType(
+            DependencyType dependencyType,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.Components
+                .Include(c => c.Dependencies)
+                .Where(c => c.Dependencies.Any(d => d.Type == dependencyType))
+                .ToListAsync();
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<List<Component>> GetComponentsByCompatibilityType(
+            CompatibilityType compatibilityType,
+            [Service] ApplicationDbContext context)
+        {
+            return await context.Components
+                .Include(c => c.CompatibleComponents)
+                .Where(c => c.CompatibleComponents.Any(cc => 
+                    cc.Type == compatibilityType))
+                .ToListAsync();
+        }
+
         public record RealTimeMonitoring(
             List<ComponentMonitoring> Components,
             int CriticalAlerts,
