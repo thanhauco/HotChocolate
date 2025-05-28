@@ -937,13 +937,12 @@ namespace ElectronicsComponents.GraphQL
                 }
             }
 
-            return new PricePredictions
-            {
+            return new PricePredictions(
                 Predictions = predictions.OrderByDescending(p => p.PriceVolatility).ToList(),
                 IncreasingPriceCount = predictions.Count(p => p.PriceTrend == PriceTrend.Increasing),
                 DecreasingPriceCount = predictions.Count(p => p.PriceTrend == PriceTrend.Decreasing),
                 StablePriceCount = predictions.Count(p => p.PriceTrend == PriceTrend.Stable)
-            };
+            );
         }
 
         [UseDbContext(typeof(ApplicationDbContext))]
@@ -2713,11 +2712,12 @@ namespace ElectronicsComponents.GraphQL
         [UseDbContext(typeof(ApplicationDbContext))]
         public async Task<SupplierRiskProfile> GetSupplierRiskProfile(
             int supplierId,
-            [Service] ApplicationDbContext context)
+            [Service] ApplicationDbContext context,
+            CancellationToken cancellationToken)
         {
             var supplier = await context.Suppliers
                 .Include(s => s.Components)
-                .FirstOrDefaultAsync(s => s.Id == supplierId);
+                .FirstOrDefaultAsync(s => s.Id == supplierId, cancellationToken);
 
             if (supplier == null)
                 throw new GraphQLException($"Supplier with ID {supplierId} not found.");
@@ -3096,6 +3096,423 @@ namespace ElectronicsComponents.GraphQL
             double ReliabilityScore,
             double PerformanceScore,
             double QualityScore
+        );
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<EnvironmentalImpact> GetEnvironmentalImpact(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            var component = await context.Components
+                .Include(c => c.EnvironmentalData)
+                .Include(c => c.ComplianceData)
+                .FirstOrDefaultAsync(c => c.Id == componentId);
+
+            if (component == null)
+                throw new GraphQLException($"Component with ID {componentId} not found.");
+
+            var environmentalData = component.EnvironmentalData;
+            var complianceData = component.ComplianceData;
+
+            var impactMetrics = new EnvironmentalMetrics
+            {
+                CarbonFootprint = CalculateCarbonFootprint(environmentalData),
+                EnergyConsumption = CalculateEnergyConsumption(environmentalData),
+                WaterUsage = CalculateWaterUsage(environmentalData),
+                WasteGeneration = CalculateWasteGeneration(environmentalData),
+                RecyclabilityScore = CalculateRecyclabilityScore(environmentalData),
+                OverallImpact = CalculateOverallEnvironmentalImpact(environmentalData)
+            };
+
+            var complianceStatus = new ComplianceStatus
+            {
+                RoHSCompliant = complianceData.RoHSCompliant,
+                REACHCompliant = complianceData.REACHCompliant,
+                WEEERegistered = complianceData.WEEERegistered,
+                ConflictMineralsCompliant = complianceData.ConflictMineralsCompliant,
+                ComplianceScore = CalculateComplianceScore(complianceData)
+            };
+
+            return new EnvironmentalImpact(
+                componentId,
+                component.Name,
+                impactMetrics,
+                complianceStatus,
+                GenerateEnvironmentalRecommendations(impactMetrics, complianceStatus)
+            );
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<EnvironmentalTrends> GetEnvironmentalTrends(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            var environmentalHistory = await context.EnvironmentalHistory
+                .Where(e => e.ComponentId == componentId)
+                .OrderBy(e => e.Date)
+                .ToListAsync();
+
+            var monthlyTrends = environmentalHistory
+                .GroupBy(e => new { e.Date.Year, e.Date.Month })
+                .Select(g => new EnvironmentalTrendEntry(
+                    new DateTime(g.Key.Year, g.Key.Month, 1),
+                    g.Average(e => e.CarbonFootprint),
+                    g.Average(e => e.EnergyConsumption),
+                    g.Average(e => e.WaterUsage),
+                    g.Average(e => e.WasteGeneration)
+                ))
+                .OrderBy(t => t.Month)
+                .ToList();
+
+            var improvementMetrics = new EnvironmentalImprovementMetrics
+            {
+                CarbonFootprintReduction = CalculateReductionRate(monthlyTrends, t => t.CarbonFootprint),
+                EnergyConsumptionReduction = CalculateReductionRate(monthlyTrends, t => t.EnergyConsumption),
+                WaterUsageReduction = CalculateReductionRate(monthlyTrends, t => t.WaterUsage),
+                WasteGenerationReduction = CalculateReductionRate(monthlyTrends, t => t.WasteGeneration)
+            };
+
+            return new EnvironmentalTrends(
+                componentId,
+                monthlyTrends,
+                improvementMetrics,
+                GenerateTrendRecommendations(monthlyTrends, improvementMetrics)
+            );
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<SustainabilityReport> GetSustainabilityReport(
+            [Service] ApplicationDbContext context)
+        {
+            var components = await context.Components
+                .Include(c => c.EnvironmentalData)
+                .Include(c => c.ComplianceData)
+                .ToListAsync();
+
+            var sustainabilityMetrics = new SustainabilityMetrics
+            {
+                TotalComponents = components.Count,
+                CompliantComponents = components.Count(c => IsFullyCompliant(c.ComplianceData)),
+                HighImpactComponents = components.Count(c => CalculateOverallEnvironmentalImpact(c.EnvironmentalData) > 0.7),
+                AverageCarbonFootprint = components.Average(c => CalculateCarbonFootprint(c.EnvironmentalData)),
+                AverageEnergyConsumption = components.Average(c => CalculateEnergyConsumption(c.EnvironmentalData)),
+                AverageWaterUsage = components.Average(c => CalculateWaterUsage(c.EnvironmentalData)),
+                AverageWasteGeneration = components.Average(c => CalculateWasteGeneration(c.EnvironmentalData)),
+                OverallSustainabilityScore = CalculateOverallSustainabilityScore(components)
+            };
+
+            var categoryBreakdown = components
+                .GroupBy(c => c.Category)
+                .Select(g => new CategoryEnvironmentalSummary(
+                    g.Key,
+                    g.Count(),
+                    g.Average(c => CalculateOverallEnvironmentalImpact(c.EnvironmentalData)),
+                    g.Count(c => IsFullyCompliant(c.ComplianceData))
+                ))
+                .ToList();
+
+            return new SustainabilityReport(
+                sustainabilityMetrics,
+                categoryBreakdown,
+                GenerateSustainabilityRecommendations(sustainabilityMetrics, categoryBreakdown)
+            );
+        }
+
+        private double CalculateCarbonFootprint(EnvironmentalData data)
+        {
+            if (data == null) return 0;
+
+            var manufacturingEmissions = data.ManufacturingEmissions;
+            var transportationEmissions = data.TransportationEmissions;
+            var usageEmissions = data.UsageEmissions;
+            var disposalEmissions = data.DisposalEmissions;
+
+            return manufacturingEmissions + transportationEmissions + usageEmissions + disposalEmissions;
+        }
+
+        private double CalculateEnergyConsumption(EnvironmentalData data)
+        {
+            if (data == null) return 0;
+
+            var manufacturingEnergy = data.ManufacturingEnergy;
+            var transportationEnergy = data.TransportationEnergy;
+            var usageEnergy = data.UsageEnergy;
+            var disposalEnergy = data.DisposalEnergy;
+
+            return manufacturingEnergy + transportationEnergy + usageEnergy + disposalEnergy;
+        }
+
+        private double CalculateWaterUsage(EnvironmentalData data)
+        {
+            if (data == null) return 0;
+
+            var manufacturingWater = data.ManufacturingWater;
+            var usageWater = data.UsageWater;
+            var disposalWater = data.DisposalWater;
+
+            return manufacturingWater + usageWater + disposalWater;
+        }
+
+        private double CalculateWasteGeneration(EnvironmentalData data)
+        {
+            if (data == null) return 0;
+
+            var manufacturingWaste = data.ManufacturingWaste;
+            var packagingWaste = data.PackagingWaste;
+            var disposalWaste = data.DisposalWaste;
+
+            return manufacturingWaste + packagingWaste + disposalWaste;
+        }
+
+        private double CalculateRecyclabilityScore(EnvironmentalData data)
+        {
+            if (data == null) return 0;
+
+            var recyclableMaterials = data.RecyclableMaterials;
+            var totalMaterials = data.TotalMaterials;
+            var recyclingEfficiency = data.RecyclingEfficiency;
+
+            return (recyclableMaterials / totalMaterials) * recyclingEfficiency;
+        }
+
+        private double CalculateOverallEnvironmentalImpact(EnvironmentalData data)
+        {
+            if (data == null) return 0;
+
+            var carbonFootprint = CalculateCarbonFootprint(data);
+            var energyConsumption = CalculateEnergyConsumption(data);
+            var waterUsage = CalculateWaterUsage(data);
+            var wasteGeneration = CalculateWasteGeneration(data);
+            var recyclabilityScore = CalculateRecyclabilityScore(data);
+
+            return (carbonFootprint * 0.3 + 
+                    energyConsumption * 0.3 + 
+                    waterUsage * 0.2 + 
+                    wasteGeneration * 0.1 + 
+                    (1 - recyclabilityScore) * 0.1);
+        }
+
+        private double CalculateComplianceScore(ComplianceData data)
+        {
+            if (data == null) return 0;
+
+            var complianceFactors = new[]
+            {
+                data.RoHSCompliant ? 1.0 : 0.0,
+                data.REACHCompliant ? 1.0 : 0.0,
+                data.WEEERegistered ? 1.0 : 0.0,
+                data.ConflictMineralsCompliant ? 1.0 : 0.0
+            };
+
+            return complianceFactors.Average();
+        }
+
+        private double CalculateReductionRate(
+            List<EnvironmentalTrendEntry> trends,
+            Func<EnvironmentalTrendEntry, double> metricSelector)
+        {
+            if (trends.Count < 2) return 0;
+
+            var firstValue = metricSelector(trends.First());
+            var lastValue = metricSelector(trends.Last());
+
+            return firstValue > 0 ? ((firstValue - lastValue) / firstValue) * 100 : 0;
+        }
+
+        private bool IsFullyCompliant(ComplianceData data)
+        {
+            if (data == null) return false;
+
+            return data.RoHSCompliant &&
+                   data.REACHCompliant &&
+                   data.WEEERegistered &&
+                   data.ConflictMineralsCompliant;
+        }
+
+        private double CalculateOverallSustainabilityScore(List<Component> components)
+        {
+            if (!components.Any()) return 0;
+
+            var scores = components.Select(c => 
+            {
+                var environmentalScore = 1 - CalculateOverallEnvironmentalImpact(c.EnvironmentalData);
+                var complianceScore = CalculateComplianceScore(c.ComplianceData);
+                return (environmentalScore * 0.7 + complianceScore * 0.3);
+            });
+
+            return scores.Average();
+        }
+
+        private List<string> GenerateEnvironmentalRecommendations(
+            EnvironmentalMetrics metrics,
+            ComplianceStatus compliance)
+        {
+            var recommendations = new List<string>();
+
+            if (metrics.CarbonFootprint > 1000)
+            {
+                recommendations.Add("Implement carbon reduction initiatives");
+            }
+
+            if (metrics.EnergyConsumption > 500)
+            {
+                recommendations.Add("Optimize energy efficiency");
+            }
+
+            if (metrics.WaterUsage > 100)
+            {
+                recommendations.Add("Reduce water consumption");
+            }
+
+            if (metrics.WasteGeneration > 50)
+            {
+                recommendations.Add("Implement waste reduction programs");
+            }
+
+            if (metrics.RecyclabilityScore < 0.7)
+            {
+                recommendations.Add("Improve recyclability of materials");
+            }
+
+            if (!compliance.RoHSCompliant)
+            {
+                recommendations.Add("Ensure RoHS compliance");
+            }
+
+            if (!compliance.REACHCompliant)
+            {
+                recommendations.Add("Ensure REACH compliance");
+            }
+
+            return recommendations;
+        }
+
+        private List<string> GenerateTrendRecommendations(
+            List<EnvironmentalTrendEntry> trends,
+            EnvironmentalImprovementMetrics improvements)
+        {
+            var recommendations = new List<string>();
+
+            if (improvements.CarbonFootprintReduction < 5)
+            {
+                recommendations.Add("Accelerate carbon footprint reduction efforts");
+            }
+
+            if (improvements.EnergyConsumptionReduction < 5)
+            {
+                recommendations.Add("Increase energy efficiency initiatives");
+            }
+
+            if (improvements.WaterUsageReduction < 5)
+            {
+                recommendations.Add("Enhance water conservation measures");
+            }
+
+            if (improvements.WasteGenerationReduction < 5)
+            {
+                recommendations.Add("Strengthen waste reduction programs");
+            }
+
+            return recommendations;
+        }
+
+        private List<string> GenerateSustainabilityRecommendations(
+            SustainabilityMetrics metrics,
+            List<CategoryEnvironmentalSummary> categoryBreakdown)
+        {
+            var recommendations = new List<string>();
+
+            if (metrics.HighImpactComponents > 0)
+            {
+                recommendations.Add($"Address {metrics.HighImpactComponents} high-impact components");
+            }
+
+            if (metrics.OverallSustainabilityScore < 0.7)
+            {
+                recommendations.Add("Implement comprehensive sustainability improvements");
+            }
+
+            var highImpactCategories = categoryBreakdown
+                .Where(c => c.AverageImpact > 0.7)
+                .Select(c => c.Category);
+
+            if (highImpactCategories.Any())
+            {
+                recommendations.Add($"Focus on improving sustainability in categories: {string.Join(", ", highImpactCategories)}");
+            }
+
+            return recommendations;
+        }
+
+        public record EnvironmentalImpact(
+            int ComponentId,
+            string ComponentName,
+            EnvironmentalMetrics ImpactMetrics,
+            ComplianceStatus ComplianceStatus,
+            List<string> Recommendations
+        );
+
+        public record EnvironmentalMetrics(
+            double CarbonFootprint,
+            double EnergyConsumption,
+            double WaterUsage,
+            double WasteGeneration,
+            double RecyclabilityScore,
+            double OverallImpact
+        );
+
+        public record ComplianceStatus(
+            bool RoHSCompliant,
+            bool REACHCompliant,
+            bool WEEERegistered,
+            bool ConflictMineralsCompliant,
+            double ComplianceScore
+        );
+
+        public record EnvironmentalTrends(
+            int ComponentId,
+            List<EnvironmentalTrendEntry> MonthlyTrends,
+            EnvironmentalImprovementMetrics ImprovementMetrics,
+            List<string> Recommendations
+        );
+
+        public record EnvironmentalTrendEntry(
+            DateTime Month,
+            double CarbonFootprint,
+            double EnergyConsumption,
+            double WaterUsage,
+            double WasteGeneration
+        );
+
+        public record EnvironmentalImprovementMetrics(
+            double CarbonFootprintReduction,
+            double EnergyConsumptionReduction,
+            double WaterUsageReduction,
+            double WasteGenerationReduction
+        );
+
+        public record SustainabilityReport(
+            SustainabilityMetrics Metrics,
+            List<CategoryEnvironmentalSummary> CategoryBreakdown,
+            List<string> Recommendations
+        );
+
+        public record SustainabilityMetrics(
+            int TotalComponents,
+            int CompliantComponents,
+            int HighImpactComponents,
+            double AverageCarbonFootprint,
+            double AverageEnergyConsumption,
+            double AverageWaterUsage,
+            double AverageWasteGeneration,
+            double OverallSustainabilityScore
+        );
+
+        public record CategoryEnvironmentalSummary(
+            string Category,
+            int ComponentCount,
+            double AverageImpact,
+            int CompliantCount
         );
     }
 
