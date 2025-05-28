@@ -291,6 +291,83 @@ mutation {
 }
 ```
 
+### Get Supplier Analytics
+```graphql
+query {
+  getSupplierAnalytics {
+    totalSuppliers
+    totalComponents
+    averageComponentsPerSupplier
+    topSuppliers {
+      name
+      componentCount
+      totalValue
+      averagePrice
+    }
+  }
+}
+```
+
+### Get Component Lifecycle
+```graphql
+query {
+  getComponentLifecycle(componentId: 1) {
+    componentId
+    componentName
+    currentStatus
+    priceHistory {
+      oldPrice
+      newPrice
+      changedAt
+      changedBy
+      reason
+    }
+    stockHistory {
+      oldQuantity
+      newQuantity
+      changedAt
+      changedBy
+      reason
+    }
+    lastRestockDate
+    lastPriceUpdateDate
+    daysSinceLastRestock
+    daysSinceLastPriceUpdate
+  }
+}
+```
+
+### Get Supplier Performance
+```graphql
+query {
+  getSupplierPerformance(supplierId: 1) {
+    supplierId
+    supplierName
+    totalComponents
+    totalValue
+    averagePrice
+    lowStockCount
+    outOfStockCount
+    overstockedCount
+    healthScore
+    componentBreakdown {
+      byCategory {
+        category
+        count
+        totalValue
+      }
+      byStatus {
+        active
+        discontinued
+        outOfStock
+        lowStock
+        overstocked
+      }
+    }
+  }
+}
+```
+
 ## Features
 
 ### Queries

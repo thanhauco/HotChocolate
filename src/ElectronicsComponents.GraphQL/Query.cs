@@ -699,6 +699,160 @@ namespace ElectronicsComponents.GraphQL
                    (outOfStockScore * outOfStockWeight) +
                    (overstockedScore * overstockedWeight);
         }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<SupplierAnalytics> GetSupplierAnalytics(
+            [Service] ApplicationDbContext context,
+            CancellationToken cancellationToken)
+        {
+            var suppliers = await context.Suppliers
+                .Include(s => s.Components)
+                .ToListAsync(cancellationToken);
+
+            return new SupplierAnalytics
+            {
+                TotalSuppliers = suppliers.Count,
+                TotalComponents = suppliers.Sum(s => s.Components.Count),
+                AverageComponentsPerSupplier = suppliers.Average(s => s.Components.Count),
+                TopSuppliers = suppliers
+                    .OrderByDescending(s => s.Components.Count)
+                    .Take(5)
+                    .Select(s => new SupplierSummary
+                    {
+                        Name = s.Name,
+                        ComponentCount = s.Components.Count,
+                        TotalValue = s.Components.Sum(c => c.Price * c.StockQuantity),
+                        AveragePrice = s.Components.Average(c => c.Price)
+                    })
+                    .ToList()
+            };
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<ComponentLifecycle> GetComponentLifecycle(
+            int componentId,
+            [Service] ApplicationDbContext context,
+            CancellationToken cancellationToken)
+        {
+            var component = await context.Components
+                .Include(c => c.PriceHistory)
+                .Include(c => c.StockHistory)
+                .FirstOrDefaultAsync(c => c.Id == componentId, cancellationToken);
+
+            if (component == null)
+                throw new GraphQLException($"Component with ID {componentId} not found.");
+
+            return new ComponentLifecycle
+            {
+                ComponentId = component.Id,
+                ComponentName = component.Name,
+                CurrentStatus = component.Status,
+                PriceHistory = component.PriceHistory
+                    .OrderByDescending(p => p.ChangedAt)
+                    .Select(p => new PriceHistoryEntry
+                    {
+                        OldPrice = p.OldPrice,
+                        NewPrice = p.NewPrice,
+                        ChangedAt = p.ChangedAt,
+                        ChangedBy = p.ChangedBy,
+                        Reason = p.Reason
+                    })
+                    .ToList(),
+                StockHistory = component.StockHistory
+                    .OrderByDescending(s => s.ChangedAt)
+                    .Select(s => new StockHistoryEntry
+                    {
+                        OldQuantity = s.OldQuantity,
+                        NewQuantity = s.NewQuantity,
+                        ChangedAt = s.ChangedAt,
+                        ChangedBy = s.ChangedBy,
+                        Reason = s.Reason
+                    })
+                    .ToList(),
+                LastRestockDate = component.LastRestockDate,
+                LastPriceUpdateDate = component.LastPriceUpdateDate,
+                DaysSinceLastRestock = component.LastRestockDate.HasValue 
+                    ? (DateTime.UtcNow - component.LastRestockDate.Value).Days 
+                    : null,
+                DaysSinceLastPriceUpdate = component.LastPriceUpdateDate.HasValue 
+                    ? (DateTime.UtcNow - component.LastPriceUpdateDate.Value).Days 
+                    : null
+            };
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<SupplierPerformance> GetSupplierPerformance(
+            int supplierId,
+            [Service] ApplicationDbContext context,
+            CancellationToken cancellationToken)
+        {
+            var supplier = await context.Suppliers
+                .Include(s => s.Components)
+                .FirstOrDefaultAsync(s => s.Id == supplierId, cancellationToken);
+
+            if (supplier == null)
+                throw new GraphQLException($"Supplier with ID {supplierId} not found.");
+
+            var components = supplier.Components;
+            var totalComponents = components.Count;
+            var lowStockComponents = components.Count(c => c.StockQuantity < c.MinimumStockLevel);
+            var outOfStockComponents = components.Count(c => c.StockQuantity == 0);
+            var overstockedComponents = components.Count(c => c.StockQuantity > c.MaximumStockLevel);
+
+            return new SupplierPerformance
+            {
+                SupplierId = supplier.Id,
+                SupplierName = supplier.Name,
+                TotalComponents = totalComponents,
+                TotalValue = components.Sum(c => c.Price * c.StockQuantity),
+                AveragePrice = components.Average(c => c.Price),
+                LowStockCount = lowStockComponents,
+                OutOfStockCount = outOfStockComponents,
+                OverstockedCount = overstockedComponents,
+                HealthScore = CalculateSupplierHealthScore(
+                    totalComponents,
+                    lowStockComponents,
+                    outOfStockComponents,
+                    overstockedComponents
+                ),
+                ComponentBreakdown = new ComponentBreakdown
+                {
+                    ByCategory = components
+                        .GroupBy(c => c.Category)
+                        .Select(g => new CategorySummary
+                        {
+                            Category = g.Key,
+                            Count = g.Count(),
+                            TotalValue = g.Sum(c => c.Price * c.StockQuantity)
+                        })
+                        .ToList(),
+                    ByStatus = new StatusSummary
+                    {
+                        Active = components.Count(c => c.Status == ComponentStatus.Active),
+                        Discontinued = components.Count(c => c.Status == ComponentStatus.Discontinued),
+                        OutOfStock = components.Count(c => c.Status == ComponentStatus.OutOfStock),
+                        LowStock = components.Count(c => c.Status == ComponentStatus.LowStock),
+                        Overstocked = components.Count(c => c.Status == ComponentStatus.Overstocked)
+                    }
+                }
+            };
+        }
+
+        private double CalculateSupplierHealthScore(
+            int totalComponents,
+            int lowStockComponents,
+            int outOfStockComponents,
+            int overstockedComponents)
+        {
+            if (totalComponents == 0) return 0;
+
+            var healthScore = 100.0;
+            healthScore -= (lowStockComponents * 5.0 / totalComponents);
+            healthScore -= (outOfStockComponents * 10.0 / totalComponents);
+            healthScore -= (overstockedComponents * 3.0 / totalComponents);
+
+            return Math.Max(0, healthScore);
+        }
     }
 
     public record AdvancedSearchInput(
@@ -788,4 +942,69 @@ namespace ElectronicsComponents.GraphQL
         int OutOfStockItems,
         int OverstockedItems,
         double HealthScore);
+
+    public record SupplierAnalytics(
+        int TotalSuppliers,
+        int TotalComponents,
+        double AverageComponentsPerSupplier,
+        List<SupplierSummary> TopSuppliers);
+
+    public record SupplierSummary(
+        string Name,
+        int ComponentCount,
+        decimal TotalValue,
+        double AveragePrice);
+
+    public record ComponentLifecycle(
+        int ComponentId,
+        string ComponentName,
+        ComponentStatus CurrentStatus,
+        List<PriceHistoryEntry> PriceHistory,
+        List<StockHistoryEntry> StockHistory,
+        DateTime? LastRestockDate,
+        DateTime? LastPriceUpdateDate,
+        int? DaysSinceLastRestock,
+        int? DaysSinceLastPriceUpdate);
+
+    public record PriceHistoryEntry(
+        decimal OldPrice,
+        decimal NewPrice,
+        DateTime ChangedAt,
+        string? ChangedBy,
+        string? Reason);
+
+    public record StockHistoryEntry(
+        int OldQuantity,
+        int NewQuantity,
+        DateTime ChangedAt,
+        string? ChangedBy,
+        string? Reason);
+
+    public record SupplierPerformance(
+        int SupplierId,
+        string SupplierName,
+        int TotalComponents,
+        decimal TotalValue,
+        double AveragePrice,
+        int LowStockCount,
+        int OutOfStockCount,
+        int OverstockedCount,
+        double HealthScore,
+        ComponentBreakdown ComponentBreakdown);
+
+    public record ComponentBreakdown(
+        List<CategorySummary> ByCategory,
+        StatusSummary ByStatus);
+
+    public record CategorySummary(
+        string Category,
+        int Count,
+        decimal TotalValue);
+
+    public record StatusSummary(
+        int Active,
+        int Discontinued,
+        int OutOfStock,
+        int LowStock,
+        int Overstocked);
 } 
