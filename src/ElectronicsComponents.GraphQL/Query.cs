@@ -891,13 +891,12 @@ namespace ElectronicsComponents.GraphQL
                 }
             }
 
-            return new InventoryPredictions
-            {
+            return new InventoryPredictions(
                 Predictions = predictions.OrderBy(p => p.DaysUntilLowStock).ToList(),
                 HighUrgencyCount = predictions.Count(p => p.UrgencyLevel == UrgencyLevel.High),
                 MediumUrgencyCount = predictions.Count(p => p.UrgencyLevel == UrgencyLevel.Medium),
                 LowUrgencyCount = predictions.Count(p => p.UrgencyLevel == UrgencyLevel.Low)
-            };
+            );
         }
 
         [UseDbContext(typeof(ApplicationDbContext))]
@@ -982,13 +981,12 @@ namespace ElectronicsComponents.GraphQL
                 }
             }
 
-            return new InventoryRecommendations
-            {
+            return new InventoryRecommendations(
                 Recommendations = recommendations.OrderByDescending(r => r.Priority).ToList(),
                 HighPriorityCount = recommendations.Count(r => r.Priority == Priority.High),
                 MediumPriorityCount = recommendations.Count(r => r.Priority == Priority.Medium),
                 LowPriorityCount = recommendations.Count(r => r.Priority == Priority.Low)
-            };
+            );
         }
 
         private double CalculateAverageConsumption(List<StockHistory> history)
@@ -3513,6 +3511,400 @@ namespace ElectronicsComponents.GraphQL
             int ComponentCount,
             double AverageImpact,
             int CompliantCount
+        );
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<CostOptimizationAnalysis> GetCostOptimizationAnalysis(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            var component = await context.Components
+                .Include(c => c.SupplierPrices)
+                .Include(c => c.PriceHistory)
+                .FirstOrDefaultAsync(c => c.Id == componentId);
+
+            if (component == null)
+                throw new GraphQLException($"Component with ID {componentId} not found.");
+
+            var supplierPrices = component.SupplierPrices
+                .OrderBy(p => p.Price)
+                .ToList();
+
+            var priceHistory = component.PriceHistory
+                .OrderByDescending(p => p.ChangedAt)
+                .Take(30)
+                .ToList();
+
+            var optimizationMetrics = new CostOptimizationMetrics
+            {
+                CurrentPrice = component.Price,
+                LowestSupplierPrice = supplierPrices.FirstOrDefault()?.Price ?? component.Price,
+                HighestSupplierPrice = supplierPrices.LastOrDefault()?.Price ?? component.Price,
+                AverageSupplierPrice = supplierPrices.Any() ? supplierPrices.Average(p => p.Price) : component.Price,
+                PriceVolatility = CalculatePriceVolatility(priceHistory),
+                PotentialSavings = CalculatePotentialSavings(component.Price, supplierPrices),
+                PriceTrend = AnalyzePriceTrend(priceHistory)
+            };
+
+            var supplierAnalysis = supplierPrices
+                .Select(p => new SupplierPriceAnalysis(
+                    p.SupplierId,
+                    p.SupplierName,
+                    p.Price,
+                    p.MinimumOrderQuantity,
+                    p.LeadTime,
+                    p.QualityScore,
+                    p.ReliabilityScore,
+                    CalculateSupplierValueScore(p)
+                ))
+                .ToList();
+
+            return new CostOptimizationAnalysis(
+                componentId,
+                component.Name,
+                optimizationMetrics,
+                supplierAnalysis,
+                GenerateCostOptimizationRecommendations(optimizationMetrics, supplierAnalysis)
+            );
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<BulkCostOptimization> GetBulkCostOptimization(
+            List<int> componentIds,
+            [Service] ApplicationDbContext context)
+        {
+            var components = await context.Components
+                .Include(c => c.SupplierPrices)
+                .Where(c => componentIds.Contains(c.Id))
+                .ToListAsync();
+
+            var optimizationResults = new List<ComponentOptimization>();
+            var totalPotentialSavings = 0m;
+            var highImpactCount = 0;
+            var mediumImpactCount = 0;
+            var lowImpactCount = 0;
+
+            foreach (var component in components)
+            {
+                var supplierPrices = component.SupplierPrices
+                    .OrderBy(p => p.Price)
+                    .ToList();
+
+                var currentCost = component.Price * component.StockQuantity;
+                var optimizedCost = CalculateOptimizedCost(component, supplierPrices);
+                var potentialSavings = currentCost - optimizedCost;
+                var impactLevel = CalculateOptimizationImpact(potentialSavings, currentCost);
+
+                switch (impactLevel)
+                {
+                    case ImpactLevel.High:
+                        highImpactCount++;
+                        break;
+                    case ImpactLevel.Medium:
+                        mediumImpactCount++;
+                        break;
+                    case ImpactLevel.Low:
+                        lowImpactCount++;
+                        break;
+                }
+
+                totalPotentialSavings += potentialSavings;
+
+                optimizationResults.Add(new ComponentOptimization(
+                    component.Id,
+                    component.Name,
+                    currentCost,
+                    optimizedCost,
+                    potentialSavings,
+                    impactLevel,
+                    GenerateComponentOptimizationRecommendations(component, supplierPrices)
+                ));
+            }
+
+            return new BulkCostOptimization(
+                optimizationResults.OrderByDescending(r => r.PotentialSavings).ToList(),
+                totalPotentialSavings,
+                highImpactCount,
+                mediumImpactCount,
+                lowImpactCount,
+                GenerateBulkOptimizationRecommendations(optimizationResults)
+            );
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<SupplierCostAnalysis> GetSupplierCostAnalysis(
+            int supplierId,
+            [Service] ApplicationDbContext context)
+        {
+            var supplier = await context.Suppliers
+                .Include(s => s.Components)
+                    .ThenInclude(c => c.SupplierPrices)
+                .FirstOrDefaultAsync(s => s.Id == supplierId);
+
+            if (supplier == null)
+                throw new GraphQLException($"Supplier with ID {supplierId} not found.");
+
+            var componentAnalyses = supplier.Components
+                .Select(c => new ComponentCostAnalysis(
+                    c.Id,
+                    c.Name,
+                    c.Price,
+                    c.SupplierPrices.FirstOrDefault(p => p.SupplierId == supplierId)?.Price ?? c.Price,
+                    c.StockQuantity,
+                    CalculatePriceDifference(c.Price, c.SupplierPrices.FirstOrDefault(p => p.SupplierId == supplierId)?.Price ?? c.Price)
+                ))
+                .OrderByDescending(a => a.PriceDifference)
+                .ToList();
+
+            var costMetrics = new SupplierCostMetrics(
+                componentAnalyses.Count,
+                componentAnalyses.Sum(a => a.CurrentCost),
+                componentAnalyses.Sum(a => a.OptimizedCost),
+                componentAnalyses.Sum(a => a.PriceDifference),
+                CalculateAveragePriceDifference(componentAnalyses),
+                CalculateSupplierCompetitiveness(componentAnalyses)
+            );
+
+            return new SupplierCostAnalysis(
+                supplierId,
+                supplier.Name,
+                costMetrics,
+                componentAnalyses,
+                GenerateSupplierCostRecommendations(costMetrics, componentAnalyses)
+            );
+        }
+
+        private decimal CalculatePotentialSavings(decimal currentPrice, List<SupplierPrice> supplierPrices)
+        {
+            if (!supplierPrices.Any()) return 0;
+
+            var lowestPrice = supplierPrices.First().Price;
+            return currentPrice > lowestPrice ? currentPrice - lowestPrice : 0;
+        }
+
+        private double CalculateSupplierValueScore(SupplierPrice supplierPrice)
+        {
+            var priceScore = 1 - (supplierPrice.Price / supplierPrice.HighestPrice);
+            var qualityScore = supplierPrice.QualityScore;
+            var reliabilityScore = supplierPrice.ReliabilityScore;
+            var leadTimeScore = 1 - (supplierPrice.LeadTime / 30.0); // Assuming 30 days is max lead time
+
+            return (priceScore * 0.4 + qualityScore * 0.3 + reliabilityScore * 0.2 + leadTimeScore * 0.1);
+        }
+
+        private decimal CalculateOptimizedCost(Component component, List<SupplierPrice> supplierPrices)
+        {
+            if (!supplierPrices.Any()) return component.Price * component.StockQuantity;
+
+            var bestSupplier = supplierPrices
+                .OrderBy(p => CalculateSupplierValueScore(p))
+                .First();
+
+            return bestSupplier.Price * component.StockQuantity;
+        }
+
+        private ImpactLevel CalculateOptimizationImpact(decimal potentialSavings, decimal currentCost)
+        {
+            var savingsPercentage = potentialSavings / currentCost;
+            return savingsPercentage switch
+            {
+                >= 0.2m => ImpactLevel.High,
+                >= 0.1m => ImpactLevel.Medium,
+                _ => ImpactLevel.Low
+            };
+        }
+
+        private decimal CalculatePriceDifference(decimal currentPrice, decimal supplierPrice)
+        {
+            return currentPrice - supplierPrice;
+        }
+
+        private double CalculateAveragePriceDifference(List<ComponentCostAnalysis> analyses)
+        {
+            if (!analyses.Any()) return 0;
+
+            return analyses.Average(a => (double)(a.PriceDifference / a.CurrentPrice));
+        }
+
+        private double CalculateSupplierCompetitiveness(List<ComponentCostAnalysis> analyses)
+        {
+            if (!analyses.Any()) return 0;
+
+            var competitiveCount = analyses.Count(a => a.PriceDifference > 0);
+            return (double)competitiveCount / analyses.Count;
+        }
+
+        private List<string> GenerateCostOptimizationRecommendations(
+            CostOptimizationMetrics metrics,
+            List<SupplierPriceAnalysis> supplierAnalysis)
+        {
+            var recommendations = new List<string>();
+
+            if (metrics.PotentialSavings > 0)
+            {
+                var bestSupplier = supplierAnalysis.OrderByDescending(s => s.ValueScore).First();
+                recommendations.Add($"Consider switching to {bestSupplier.SupplierName} for potential savings of {metrics.PotentialSavings:C}");
+            }
+
+            if (metrics.PriceVolatility > 0.1)
+            {
+                recommendations.Add("Implement price hedging strategies due to high volatility");
+            }
+
+            if (metrics.PriceTrend == PriceTrend.Increasing)
+            {
+                recommendations.Add("Consider bulk purchasing to lock in current prices");
+            }
+
+            return recommendations;
+        }
+
+        private List<string> GenerateComponentOptimizationRecommendations(
+            Component component,
+            List<SupplierPrice> supplierPrices)
+        {
+            var recommendations = new List<string>();
+
+            if (supplierPrices.Any())
+            {
+                var bestSupplier = supplierPrices
+                    .OrderBy(p => CalculateSupplierValueScore(p))
+                    .First();
+
+                var potentialSavings = CalculatePotentialSavings(component.Price, supplierPrices);
+                if (potentialSavings > 0)
+                {
+                    recommendations.Add($"Switch to {bestSupplier.SupplierName} for savings of {potentialSavings:C}");
+                }
+            }
+
+            if (component.StockQuantity > component.MaximumStockLevel)
+            {
+                recommendations.Add("Reduce stock levels to optimize holding costs");
+            }
+
+            return recommendations;
+        }
+
+        private List<string> GenerateBulkOptimizationRecommendations(
+            List<ComponentOptimization> optimizationResults)
+        {
+            var recommendations = new List<string>();
+
+            var highImpactComponents = optimizationResults
+                .Where(r => r.ImpactLevel == ImpactLevel.High)
+                .ToList();
+
+            if (highImpactComponents.Any())
+            {
+                recommendations.Add($"Prioritize optimization for {highImpactComponents.Count} high-impact components");
+            }
+
+            var totalSavings = optimizationResults.Sum(r => r.PotentialSavings);
+            if (totalSavings > 0)
+            {
+                recommendations.Add($"Total potential savings: {totalSavings:C}");
+            }
+
+            return recommendations;
+        }
+
+        private List<string> GenerateSupplierCostRecommendations(
+            SupplierCostMetrics metrics,
+            List<ComponentCostAnalysis> analyses)
+        {
+            var recommendations = new List<string>();
+
+            if (metrics.PriceDifference > 0)
+            {
+                recommendations.Add($"Potential savings of {metrics.PriceDifference:C} available");
+            }
+
+            if (metrics.AveragePriceDifference > 0.1)
+            {
+                recommendations.Add("Supplier prices are significantly higher than market average");
+            }
+
+            if (metrics.CompetitivenessScore < 0.5)
+            {
+                recommendations.Add("Consider alternative suppliers for better pricing");
+            }
+
+            return recommendations;
+        }
+
+        public record CostOptimizationAnalysis(
+            int ComponentId,
+            string ComponentName,
+            CostOptimizationMetrics Metrics,
+            List<SupplierPriceAnalysis> SupplierAnalysis,
+            List<string> Recommendations
+        );
+
+        public record CostOptimizationMetrics(
+            decimal CurrentPrice,
+            decimal LowestSupplierPrice,
+            decimal HighestSupplierPrice,
+            decimal AverageSupplierPrice,
+            double PriceVolatility,
+            decimal PotentialSavings,
+            PriceTrend PriceTrend
+        );
+
+        public record SupplierPriceAnalysis(
+            int SupplierId,
+            string SupplierName,
+            decimal Price,
+            int MinimumOrderQuantity,
+            int LeadTime,
+            double QualityScore,
+            double ReliabilityScore,
+            double ValueScore
+        );
+
+        public record BulkCostOptimization(
+            List<ComponentOptimization> Results,
+            decimal TotalPotentialSavings,
+            int HighImpactCount,
+            int MediumImpactCount,
+            int LowImpactCount,
+            List<string> Recommendations
+        );
+
+        public record ComponentOptimization(
+            int ComponentId,
+            string ComponentName,
+            decimal CurrentCost,
+            decimal OptimizedCost,
+            decimal PotentialSavings,
+            ImpactLevel ImpactLevel,
+            List<string> Recommendations
+        );
+
+        public record SupplierCostAnalysis(
+            int SupplierId,
+            string SupplierName,
+            SupplierCostMetrics Metrics,
+            List<ComponentCostAnalysis> ComponentAnalyses,
+            List<string> Recommendations
+        );
+
+        public record SupplierCostMetrics(
+            int ComponentCount,
+            decimal CurrentCost,
+            decimal OptimizedCost,
+            decimal PriceDifference,
+            double AveragePriceDifference,
+            double CompetitivenessScore
+        );
+
+        public record ComponentCostAnalysis(
+            int ComponentId,
+            string ComponentName,
+            decimal CurrentPrice,
+            decimal SupplierPrice,
+            int StockQuantity,
+            decimal PriceDifference
         );
     }
 
