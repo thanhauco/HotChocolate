@@ -2174,6 +2174,159 @@ namespace ElectronicsComponents.GraphQL
                 .ToListAsync();
         }
 
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<DependencyChainAnalysis> AnalyzeDependencyChain(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            var component = await context.Components
+                .Include(c => c.Dependencies)
+                    .ThenInclude(d => d.DependentComponent)
+                .FirstOrDefaultAsync(c => c.Id == componentId);
+
+            if (component == null)
+                throw new GraphQLException($"Component with ID {componentId} not found.");
+
+            var dependencyChain = new List<DependencyNode>();
+            var visited = new HashSet<int>();
+            var circularDependencies = new List<CircularDependency>();
+
+            void BuildDependencyChain(Component comp, int depth = 0)
+            {
+                if (visited.Contains(comp.Id))
+                {
+                    circularDependencies.Add(new CircularDependency(
+                        comp.Id,
+                        comp.Name,
+                        depth
+                    ));
+                    return;
+                }
+
+                visited.Add(comp.Id);
+                dependencyChain.Add(new DependencyNode(
+                    comp.Id,
+                    comp.Name,
+                    depth,
+                    comp.Dependencies.Select(d => new DependencyInfo(
+                        d.DependentComponentId,
+                        d.DependentComponent.Name,
+                        d.Type,
+                        d.IsRequired,
+                        d.Quantity
+                    )).ToList()
+                ));
+
+                foreach (var dep in comp.Dependencies)
+                {
+                    BuildDependencyChain(dep.DependentComponent, depth + 1);
+                }
+
+                visited.Remove(comp.Id);
+            }
+
+            BuildDependencyChain(component);
+
+            return new DependencyChainAnalysis(
+                componentId,
+                component.Name,
+                dependencyChain,
+                circularDependencies,
+                dependencyChain.Count,
+                circularDependencies.Count
+            );
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<CompatibilityMatrix> GenerateCompatibilityMatrix(
+            List<int> componentIds,
+            [Service] ApplicationDbContext context)
+        {
+            var components = await context.Components
+                .Include(c => c.CompatibleComponents)
+                    .ThenInclude(cc => cc.CompatibleComponent)
+                .Where(c => componentIds.Contains(c.Id))
+                .ToListAsync();
+
+            var matrix = new List<CompatibilityEntry>();
+            var compatibilityTypes = Enum.GetValues(typeof(CompatibilityType))
+                .Cast<CompatibilityType>()
+                .ToList();
+
+            foreach (var comp1 in components)
+            {
+                foreach (var comp2 in components.Where(c => c.Id > comp1.Id))
+                {
+                    var compatibility = comp1.CompatibleComponents
+                        .FirstOrDefault(cc => cc.CompatibleComponentId == comp2.Id);
+
+                    matrix.Add(new CompatibilityEntry(
+                        comp1.Id,
+                        comp1.Name,
+                        comp2.Id,
+                        comp2.Name,
+                        compatibility?.Type ?? CompatibilityType.None,
+                        compatibility?.Description ?? "No compatibility information"
+                    ));
+                }
+            }
+
+            return new CompatibilityMatrix(
+                components.Select(c => new ComponentInfo(c.Id, c.Name)).ToList(),
+                matrix,
+                compatibilityTypes
+            );
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<DependencyImpactAnalysis> AnalyzeDependencyImpact(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            var component = await context.Components
+                .Include(c => c.Dependencies)
+                    .ThenInclude(d => d.DependentComponent)
+                .Include(c => c.DependentComponents)
+                    .ThenInclude(d => d.Component)
+                .FirstOrDefaultAsync(c => c.Id == componentId);
+
+            if (component == null)
+                throw new GraphQLException($"Component with ID {componentId} not found.");
+
+            var directDependencies = component.Dependencies
+                .Select(d => new DependencyImpact(
+                    d.DependentComponentId,
+                    d.DependentComponent.Name,
+                    d.Type,
+                    d.IsRequired,
+                    d.Quantity,
+                    "Direct"
+                )).ToList();
+
+            var dependentComponents = component.DependentComponents
+                .Select(d => new DependencyImpact(
+                    d.ComponentId,
+                    d.Component.Name,
+                    d.Type,
+                    d.IsRequired,
+                    d.Quantity,
+                    "Reverse"
+                )).ToList();
+
+            var totalImpact = directDependencies.Count + dependentComponents.Count;
+            var criticalDependencies = directDependencies
+                .Count(d => d.IsRequired && d.Type == DependencyType.Required);
+
+            return new DependencyImpactAnalysis(
+                componentId,
+                component.Name,
+                directDependencies,
+                dependentComponents,
+                totalImpact,
+                criticalDependencies
+            );
+        }
+
         public record RealTimeMonitoring(
             List<ComponentMonitoring> Components,
             int CriticalAlerts,
@@ -2509,4 +2662,72 @@ namespace ElectronicsComponents.GraphQL
         Medium,
         High
     }
+
+    public record DependencyChainAnalysis(
+        int RootComponentId,
+        string RootComponentName,
+        List<DependencyNode> DependencyChain,
+        List<CircularDependency> CircularDependencies,
+        int TotalDependencies,
+        int CircularDependencyCount
+    );
+
+    public record DependencyNode(
+        int ComponentId,
+        string ComponentName,
+        int Depth,
+        List<DependencyInfo> Dependencies
+    );
+
+    public record DependencyInfo(
+        int DependentComponentId,
+        string DependentComponentName,
+        DependencyType Type,
+        bool IsRequired,
+        int Quantity
+    );
+
+    public record CircularDependency(
+        int ComponentId,
+        string ComponentName,
+        int Depth
+    );
+
+    public record CompatibilityMatrix(
+        List<ComponentInfo> Components,
+        List<CompatibilityEntry> Matrix,
+        List<CompatibilityType> CompatibilityTypes
+    );
+
+    public record ComponentInfo(
+        int Id,
+        string Name
+    );
+
+    public record CompatibilityEntry(
+        int Component1Id,
+        string Component1Name,
+        int Component2Id,
+        string Component2Name,
+        CompatibilityType Type,
+        string Description
+    );
+
+    public record DependencyImpactAnalysis(
+        int ComponentId,
+        string ComponentName,
+        List<DependencyImpact> DirectDependencies,
+        List<DependencyImpact> DependentComponents,
+        int TotalImpact,
+        int CriticalDependencies
+    );
+
+    public record DependencyImpact(
+        int ComponentId,
+        string ComponentName,
+        DependencyType Type,
+        bool IsRequired,
+        int Quantity,
+        string ImpactType
+    );
 } 
