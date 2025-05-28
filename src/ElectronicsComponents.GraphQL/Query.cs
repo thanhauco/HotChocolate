@@ -1276,13 +1276,12 @@ namespace ElectronicsComponents.GraphQL
                 }
             }
 
-            return new MLPredictions
-            {
+            return new MLPredictions(
                 Predictions = predictions.OrderByDescending(p => p.ConfidenceScore).ToList(),
                 HighConfidenceCount = predictions.Count(p => p.ConfidenceScore >= 0.8),
                 MediumConfidenceCount = predictions.Count(p => p.ConfidenceScore >= 0.5 && p.ConfidenceScore < 0.8),
                 LowConfidenceCount = predictions.Count(p => p.ConfidenceScore < 0.5)
-            };
+            );
         }
 
         [UseDbContext(typeof(ApplicationDbContext))]
@@ -1315,14 +1314,13 @@ namespace ElectronicsComponents.GraphQL
                 }
             }
 
-            return new OptimizationResults
-            {
+            return new OptimizationResults(
                 Results = results.OrderByDescending(r => r.PotentialSavings).ToList(),
                 TotalPotentialSavings = results.Sum(r => r.PotentialSavings),
                 HighImpactCount = results.Count(r => r.ImpactLevel == ImpactLevel.High),
                 MediumImpactCount = results.Count(r => r.ImpactLevel == ImpactLevel.Medium),
                 LowImpactCount = results.Count(r => r.ImpactLevel == ImpactLevel.Low)
-            };
+            );
         }
 
         private SeasonalPattern DetectSeasonalPattern(List<StockHistory> history)
@@ -2661,6 +2659,444 @@ namespace ElectronicsComponents.GraphQL
             InProgress,
             Cancelled
         }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<SupplyChainRiskAnalysis> GetSupplyChainRiskAnalysis(
+            int componentId,
+            [Service] ApplicationDbContext context)
+        {
+            var component = await context.Components
+                .Include(c => c.Supplier)
+                .Include(c => c.StockHistory)
+                .Include(c => c.PriceHistory)
+                .FirstOrDefaultAsync(c => c.Id == componentId);
+
+            if (component == null)
+                throw new GraphQLException($"Component with ID {componentId} not found.");
+
+            var stockHistory = component.StockHistory
+                .OrderByDescending(s => s.ChangedAt)
+                .Take(30)
+                .ToList();
+
+            var priceHistory = component.PriceHistory
+                .OrderByDescending(p => p.ChangedAt)
+                .Take(30)
+                .ToList();
+
+            var riskMetrics = new SupplyChainRiskMetrics
+            {
+                StockRisk = CalculateStockRisk(component, stockHistory),
+                PriceRisk = CalculatePriceRisk(component, priceHistory),
+                SupplierRisk = CalculateSupplierRisk(component.Supplier),
+                LeadTimeRisk = CalculateLeadTimeRisk(component),
+                OverallRisk = CalculateOverallRisk(component, stockHistory, priceHistory)
+            };
+
+            var riskFactors = new List<RiskFactor>
+            {
+                new("Stock Level", riskMetrics.StockRisk, "Current stock level and stock volatility"),
+                new("Price Volatility", riskMetrics.PriceRisk, "Price stability and trends"),
+                new("Supplier Reliability", riskMetrics.SupplierRisk, "Supplier performance and reliability"),
+                new("Lead Time", riskMetrics.LeadTimeRisk, "Order fulfillment time and consistency")
+            };
+
+            return new SupplyChainRiskAnalysis(
+                componentId,
+                component.Name,
+                riskMetrics,
+                riskFactors,
+                GenerateRiskMitigationStrategies(riskMetrics, riskFactors)
+            );
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<SupplierRiskProfile> GetSupplierRiskProfile(
+            int supplierId,
+            [Service] ApplicationDbContext context)
+        {
+            var supplier = await context.Suppliers
+                .Include(s => s.Components)
+                .FirstOrDefaultAsync(s => s.Id == supplierId);
+
+            if (supplier == null)
+                throw new GraphQLException($"Supplier with ID {supplierId} not found.");
+
+            var components = supplier.Components;
+            var riskMetrics = new SupplierRiskMetrics
+            {
+                ComponentCount = components.Count,
+                AverageLeadTime = components.Average(c => c.LeadTime),
+                OnTimeDeliveryRate = CalculateOnTimeDeliveryRate(components),
+                QualityIssueRate = CalculateQualityIssueRate(components),
+                PriceStabilityScore = CalculatePriceStabilityScore(components),
+                OverallRiskScore = CalculateSupplierOverallRisk(components)
+            };
+
+            var riskHistory = await context.SupplierRiskHistory
+                .Where(r => r.SupplierId == supplierId)
+                .OrderByDescending(r => r.Date)
+                .Take(12)
+                .ToListAsync();
+
+            return new SupplierRiskProfile(
+                supplierId,
+                supplier.Name,
+                riskMetrics,
+                riskHistory.Select(r => new RiskHistoryEntry(
+                    r.Date,
+                    r.RiskScore,
+                    r.RiskFactors,
+                    r.MitigationActions
+                )).ToList(),
+                GenerateSupplierRecommendations(riskMetrics, riskHistory)
+            );
+        }
+
+        [UseDbContext(typeof(ApplicationDbContext))]
+        public async Task<SupplyChainResilience> GetSupplyChainResilience(
+            [Service] ApplicationDbContext context)
+        {
+            var components = await context.Components
+                .Include(c => c.Supplier)
+                .Include(c => c.StockHistory)
+                .Include(c => c.PriceHistory)
+                .ToListAsync();
+
+            var resilienceMetrics = new ResilienceMetrics
+            {
+                TotalComponents = components.Count,
+                HighRiskComponents = components.Count(c => CalculateOverallRisk(c, c.StockHistory.ToList(), c.PriceHistory.ToList()) > 0.7),
+                MediumRiskComponents = components.Count(c => CalculateOverallRisk(c, c.StockHistory.ToList(), c.PriceHistory.ToList()) > 0.4),
+                LowRiskComponents = components.Count(c => CalculateOverallRisk(c, c.StockHistory.ToList(), c.PriceHistory.ToList()) <= 0.4),
+                AverageLeadTime = components.Average(c => c.LeadTime),
+                SupplyChainHealthScore = CalculateSupplyChainHealthScore(components)
+            };
+
+            var criticalPaths = IdentifyCriticalPaths(components);
+            var alternativeSuppliers = FindAlternativeSuppliers(components);
+
+            return new SupplyChainResilience(
+                resilienceMetrics,
+                criticalPaths,
+                alternativeSuppliers,
+                GenerateResilienceRecommendations(resilienceMetrics, criticalPaths, alternativeSuppliers)
+            );
+        }
+
+        private double CalculateStockRisk(Component component, List<StockHistory> stockHistory)
+        {
+            if (!stockHistory.Any()) return 0;
+
+            var currentStock = component.StockQuantity;
+            var minStock = component.MinimumStockLevel;
+            var stockVolatility = CalculateStockVolatility(stockHistory);
+            var stockTrend = AnalyzeStockTrend(stockHistory);
+
+            var stockLevelRisk = currentStock <= minStock ? 1.0 : 
+                (double)(minStock * 2 - currentStock) / minStock;
+            var volatilityRisk = stockVolatility * 0.3;
+            var trendRisk = stockTrend == StockTrend.RapidDecrease ? 0.3 : 0;
+
+            return Math.Min(1.0, Math.Max(0, stockLevelRisk + volatilityRisk + trendRisk));
+        }
+
+        private double CalculatePriceRisk(Component component, List<PriceHistory> priceHistory)
+        {
+            if (!priceHistory.Any()) return 0;
+
+            var priceVolatility = CalculatePriceVolatility(priceHistory);
+            var priceTrend = AnalyzePriceTrend(priceHistory);
+            var priceChange = Math.Abs(priceHistory.First().NewPrice - priceHistory.Last().NewPrice) / priceHistory.Last().NewPrice;
+
+            var volatilityRisk = priceVolatility * 0.4;
+            var trendRisk = priceTrend == PriceTrend.Increasing ? 0.3 : 0;
+            var changeRisk = priceChange * 0.3;
+
+            return Math.Min(1.0, Math.Max(0, volatilityRisk + trendRisk + changeRisk));
+        }
+
+        private double CalculateSupplierRisk(Supplier supplier)
+        {
+            if (supplier == null) return 1.0;
+
+            var reliabilityScore = supplier.ReliabilityScore;
+            var performanceScore = supplier.PerformanceScore;
+            var qualityScore = supplier.QualityScore;
+
+            return 1 - ((reliabilityScore + performanceScore + qualityScore) / 3);
+        }
+
+        private double CalculateLeadTimeRisk(Component component)
+        {
+            var leadTime = component.LeadTime;
+            var maxAcceptableLeadTime = 30; // 30 days
+
+            return Math.Min(1.0, (double)leadTime / maxAcceptableLeadTime);
+        }
+
+        private double CalculateOverallRisk(
+            Component component,
+            List<StockHistory> stockHistory,
+            List<PriceHistory> priceHistory)
+        {
+            var stockRisk = CalculateStockRisk(component, stockHistory);
+            var priceRisk = CalculatePriceRisk(component, priceHistory);
+            var supplierRisk = CalculateSupplierRisk(component.Supplier);
+            var leadTimeRisk = CalculateLeadTimeRisk(component);
+
+            return (stockRisk * 0.3 + priceRisk * 0.3 + supplierRisk * 0.2 + leadTimeRisk * 0.2);
+        }
+
+        private double CalculateOnTimeDeliveryRate(List<Component> components)
+        {
+            var totalDeliveries = components.Sum(c => c.DeliveryCount);
+            var onTimeDeliveries = components.Sum(c => c.OnTimeDeliveryCount);
+
+            return totalDeliveries > 0 ? (double)onTimeDeliveries / totalDeliveries : 0;
+        }
+
+        private double CalculateQualityIssueRate(List<Component> components)
+        {
+            var totalComponents = components.Count;
+            var componentsWithIssues = components.Count(c => c.QualityIssues > 0);
+
+            return totalComponents > 0 ? (double)componentsWithIssues / totalComponents : 0;
+        }
+
+        private double CalculatePriceStabilityScore(List<Component> components)
+        {
+            if (!components.Any()) return 0;
+
+            var stabilityScores = components.Select(c =>
+            {
+                var priceHistory = c.PriceHistory.OrderByDescending(p => p.ChangedAt).Take(10).ToList();
+                return 1 - CalculatePriceVolatility(priceHistory);
+            });
+
+            return stabilityScores.Average();
+        }
+
+        private double CalculateSupplierOverallRisk(List<Component> components)
+        {
+            var onTimeDeliveryRate = CalculateOnTimeDeliveryRate(components);
+            var qualityIssueRate = CalculateQualityIssueRate(components);
+            var priceStabilityScore = CalculatePriceStabilityScore(components);
+
+            return 1 - ((onTimeDeliveryRate * 0.4 + (1 - qualityIssueRate) * 0.4 + priceStabilityScore * 0.2));
+        }
+
+        private double CalculateSupplyChainHealthScore(List<Component> components)
+        {
+            var riskScores = components.Select(c => 
+                1 - CalculateOverallRisk(c, c.StockHistory.ToList(), c.PriceHistory.ToList()));
+
+            return riskScores.Any() ? riskScores.Average() : 0;
+        }
+
+        private List<CriticalPath> IdentifyCriticalPaths(List<Component> components)
+        {
+            return components
+                .Where(c => CalculateOverallRisk(c, c.StockHistory.ToList(), c.PriceHistory.ToList()) > 0.7)
+                .Select(c => new CriticalPath(
+                    c.Id,
+                    c.Name,
+                    c.Supplier?.Name ?? "Unknown",
+                    c.LeadTime,
+                    CalculateOverallRisk(c, c.StockHistory.ToList(), c.PriceHistory.ToList())
+                ))
+                .ToList();
+        }
+
+        private List<AlternativeSupplier> FindAlternativeSuppliers(List<Component> components)
+        {
+            return components
+                .Where(c => c.Supplier != null)
+                .Select(c => new AlternativeSupplier(
+                    c.Id,
+                    c.Name,
+                    c.Supplier.Name,
+                    c.Supplier.ReliabilityScore,
+                    c.Supplier.PerformanceScore,
+                    c.Supplier.QualityScore
+                ))
+                .ToList();
+        }
+
+        private List<string> GenerateRiskMitigationStrategies(
+            SupplyChainRiskMetrics metrics,
+            List<RiskFactor> riskFactors)
+        {
+            var strategies = new List<string>();
+
+            if (metrics.StockRisk > 0.7)
+            {
+                strategies.Add("Implement safety stock levels");
+                strategies.Add("Establish backup suppliers");
+            }
+
+            if (metrics.PriceRisk > 0.7)
+            {
+                strategies.Add("Negotiate long-term pricing agreements");
+                strategies.Add("Implement price hedging strategies");
+            }
+
+            if (metrics.SupplierRisk > 0.7)
+            {
+                strategies.Add("Develop supplier contingency plans");
+                strategies.Add("Regular supplier performance reviews");
+            }
+
+            if (metrics.LeadTimeRisk > 0.7)
+            {
+                strategies.Add("Optimize order quantities");
+                strategies.Add("Implement just-in-time inventory management");
+            }
+
+            return strategies;
+        }
+
+        private List<string> GenerateSupplierRecommendations(
+            SupplierRiskMetrics metrics,
+            List<SupplierRiskHistory> riskHistory)
+        {
+            var recommendations = new List<string>();
+
+            if (metrics.OverallRiskScore > 0.7)
+            {
+                recommendations.Add("Critical: Immediate supplier evaluation needed");
+            }
+            else if (metrics.OverallRiskScore > 0.4)
+            {
+                recommendations.Add("Warning: Supplier performance needs improvement");
+            }
+
+            if (metrics.OnTimeDeliveryRate < 0.8)
+            {
+                recommendations.Add("Improve delivery reliability");
+            }
+
+            if (metrics.QualityIssueRate > 0.1)
+            {
+                recommendations.Add("Address quality control issues");
+            }
+
+            if (metrics.PriceStabilityScore < 0.7)
+            {
+                recommendations.Add("Stabilize pricing strategy");
+            }
+
+            return recommendations;
+        }
+
+        private List<string> GenerateResilienceRecommendations(
+            ResilienceMetrics metrics,
+            List<CriticalPath> criticalPaths,
+            List<AlternativeSupplier> alternativeSuppliers)
+        {
+            var recommendations = new List<string>();
+
+            if (metrics.HighRiskComponents > 0)
+            {
+                recommendations.Add($"Address {metrics.HighRiskComponents} high-risk components");
+            }
+
+            if (metrics.AverageLeadTime > 20)
+            {
+                recommendations.Add("Optimize supply chain lead times");
+            }
+
+            if (metrics.SupplyChainHealthScore < 0.7)
+            {
+                recommendations.Add("Implement supply chain resilience measures");
+            }
+
+            if (criticalPaths.Any())
+            {
+                recommendations.Add("Develop contingency plans for critical paths");
+            }
+
+            return recommendations;
+        }
+
+        public record SupplyChainRiskAnalysis(
+            int ComponentId,
+            string ComponentName,
+            SupplyChainRiskMetrics RiskMetrics,
+            List<RiskFactor> RiskFactors,
+            List<string> MitigationStrategies
+        );
+
+        public record SupplyChainRiskMetrics(
+            double StockRisk,
+            double PriceRisk,
+            double SupplierRisk,
+            double LeadTimeRisk,
+            double OverallRisk
+        );
+
+        public record RiskFactor(
+            string Name,
+            double RiskLevel,
+            string Description
+        );
+
+        public record SupplierRiskProfile(
+            int SupplierId,
+            string SupplierName,
+            SupplierRiskMetrics RiskMetrics,
+            List<RiskHistoryEntry> RiskHistory,
+            List<string> Recommendations
+        );
+
+        public record SupplierRiskMetrics(
+            int ComponentCount,
+            double AverageLeadTime,
+            double OnTimeDeliveryRate,
+            double QualityIssueRate,
+            double PriceStabilityScore,
+            double OverallRiskScore
+        );
+
+        public record RiskHistoryEntry(
+            DateTime Date,
+            double RiskScore,
+            List<string> RiskFactors,
+            List<string> MitigationActions
+        );
+
+        public record SupplyChainResilience(
+            ResilienceMetrics Metrics,
+            List<CriticalPath> CriticalPaths,
+            List<AlternativeSupplier> AlternativeSuppliers,
+            List<string> Recommendations
+        );
+
+        public record ResilienceMetrics(
+            int TotalComponents,
+            int HighRiskComponents,
+            int MediumRiskComponents,
+            int LowRiskComponents,
+            double AverageLeadTime,
+            double SupplyChainHealthScore
+        );
+
+        public record CriticalPath(
+            int ComponentId,
+            string ComponentName,
+            string SupplierName,
+            int LeadTime,
+            double RiskScore
+        );
+
+        public record AlternativeSupplier(
+            int ComponentId,
+            string ComponentName,
+            string SupplierName,
+            double ReliabilityScore,
+            double PerformanceScore,
+            double QualityScore
+        );
     }
 
     public record AdvancedSearchInput(
